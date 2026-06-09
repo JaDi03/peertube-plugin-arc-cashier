@@ -1,6 +1,6 @@
-export async function register (options: any) {
+export async function register (_options: any) {
   // 1. Fetch Arc-Cashier Base URL from plugin router
-  let baseUrl = ''
+  let baseUrl: string
   try {
     const response = await fetch('/plugins/peertube-plugin-arc-cashier/router/base-url')
     const data = await response.json()
