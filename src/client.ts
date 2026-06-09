@@ -2,7 +2,7 @@ export async function register (_options: any) {
   // 1. Fetch Arc-Cashier Base URL from plugin router
   let baseUrl: string
   try {
-    const response = await fetch('/plugins/peertube-plugin-arc-cashier/router/base-url')
+    const response = await fetch('/plugins/arc-cashier/router/base-url')
     const data = await response.json()
     if (data.baseUrl) {
       baseUrl = data.baseUrl
@@ -14,6 +14,19 @@ export async function register (_options: any) {
     console.error('[arc-cashier] Failed to fetch base URL:', err)
     return
   }
+
+  // Inject SPA styles to prevent paywall from blocking the dashboard
+  const style = document.createElement('style')
+  style.innerHTML = `
+    body.arc-hide-paywall {
+       overflow: auto !important;
+    }
+    body.arc-hide-paywall #arc-paywall-overlay,
+    body.arc-hide-paywall #arc-session-manager {
+       display: none !important;
+    }
+  `
+  document.head.appendChild(style)
 
   // 2. Inject Arc-Cashier paywall assets dynamically
   const cssLink = document.createElement('link')
@@ -38,7 +51,7 @@ export async function register (_options: any) {
 
   const sendPing = async (action: 'start' | 'stop' | 'ping') => {
       try {
-          await fetch('/plugins/peertube-plugin-arc-cashier/router/ping', {
+          await fetch('/plugins/arc-cashier/router/ping', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ action, userId })
@@ -48,27 +61,45 @@ export async function register (_options: any) {
       }
   }
 
-  // 5. Hook into video player events
-  const checkVideoInterval = setInterval(() => {
+  // Send start immediately so backend knows the viewer is here before they pay
+  sendPing('start')
+  pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
+
+  // 5. Hook into video player events for SPA navigation
+  let currentVideo: HTMLVideoElement | null = null
+
+  setInterval(() => {
+    const isWatchPage = window.location.pathname.includes('/watch') || window.location.pathname.includes('/w/')
+    
+    // Toggle the hide class based on URL
+    if (!isWatchPage) {
+       document.body.classList.add('arc-hide-paywall')
+    } else {
+       document.body.classList.remove('arc-hide-paywall')
+    }
+
     const video = document.querySelector('video')
-    if (video) {
-      clearInterval(checkVideoInterval)
+    
+    // Video appeared (User navigated TO a video page)
+    if (video && video !== currentVideo) {
+      currentVideo = video
       
       video.addEventListener('play', () => {
-         sendPing('start')
          if (pingInterval) clearInterval(pingInterval)
          pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
       })
-      
-      video.addEventListener('pause', () => {
-         if (pingInterval) clearInterval(pingInterval)
-         sendPing('stop')
-      })
-      
-      video.addEventListener('ended', () => {
-         if (pingInterval) clearInterval(pingInterval)
-         sendPing('stop')
-      })
+    }
+
+    // Video disappeared (User navigated AWAY from video page to dashboard)
+    if (!video && currentVideo) {
+      currentVideo = null
+
+      // Stop billing pings immediately
+      if (pingInterval) {
+        clearInterval(pingInterval)
+        pingInterval = undefined
+      }
+      sendPing('stop')
     }
   }, 1000)
 }

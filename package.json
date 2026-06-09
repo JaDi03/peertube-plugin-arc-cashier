@@ -1,6 +1,6 @@
 {
   "name": "peertube-plugin-arc-cashier",
-  "version": "1.0.0",
+  "version": "1.0.9",
   "description": "Arc-Cashier integration for PeerTube for per-second billing",
   "engine": {
     "peertube": ">= 6.0.0"
@@ -16,16 +16,20 @@
     }
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && esbuild src/client.ts --bundle --outfile=dist/client.js --format=esm",
     "test": "vitest run",
     "lint": "eslint"
   },
   "author": "JaDi03",
+  "homepage": "https://github.com/JaDi03/Arc-Cashier",
+  "bugs": "https://github.com/JaDi03/Arc-Cashier/issues",
+  "library": "peertubePluginArcCashier",
   "license": "Apache-2.0",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@peertube/peertube-types": "^8.2.0",
     "@types/node": "^25.9.2",
+    "esbuild": "^0.28.0",
     "eslint": "^10.4.1",
     "globals": "^17.6.0",
     "typescript": "^6.0.3",

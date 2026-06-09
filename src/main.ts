@@ -1,7 +1,21 @@
 import * as crypto from 'crypto'
 
+const TIMEOUT_MS = 30000
+const activeViewers = new Map<string, number>()
+
 export async function register (options: any) {
   const { registerSetting, settingsManager, getRouter, peertubeHelpers } = options
+
+  // Global checker for inactive viewers
+  setInterval(() => {
+    const now = Date.now()
+    for (const [userId, expireTime] of activeViewers.entries()) {
+      if (now > expireTime) {
+        activeViewers.delete(userId)
+        sendWebhook('viewer_left', userId).catch(console.error)
+      }
+    }
+  }, 5000)
 
   // 1. Register settings for Arc-Cashier integration
   await registerSetting({
@@ -26,7 +40,6 @@ export async function register (options: any) {
   const router = getRouter()
 
   // In-memory map to detect when a viewer drops off without sending 'stop'
-  const activeViewers = new Map<string, NodeJS.Timeout>()
 
   // Helper to get base URL from webhook URL
   const getBaseUrl = async (): Promise<string | null> => {
@@ -41,9 +54,13 @@ export async function register (options: any) {
 
   // Endpoint for the client script to retrieve the base URL
   router.get('/base-url', async (req: any, res: any) => {
-    const baseUrl = await getBaseUrl()
+    let baseUrl = await getBaseUrl()
     if (!baseUrl) {
       return res.status(404).json({ error: 'Plugin not fully configured' })
+    }
+    // Fix for Docker environments where backend uses host.docker.internal but frontend needs localhost
+    if (baseUrl.includes('host.docker.internal')) {
+      baseUrl = baseUrl.replace('host.docker.internal', 'localhost')
     }
     res.json({ baseUrl })
   })
@@ -85,28 +102,16 @@ export async function register (options: any) {
        return
     }
 
-    // Ping timeout logic (e.g. 30 seconds)
-    const TIMEOUT_MS = 30000
-
     if (action === 'start' || action === 'ping') {
       if (!activeViewers.has(userId)) {
         await sendWebhook('viewer_joined', userId)
       }
 
-      // Clear existing timeout if any
-      if (activeViewers.has(userId)) {
-        clearTimeout(activeViewers.get(userId)!)
-      }
-
-      // Set new timeout: if we don't hear from them in 30s, assume they left
-      activeViewers.set(userId, setTimeout(() => {
-        activeViewers.delete(userId)
-        sendWebhook('viewer_left', userId)
-      }, TIMEOUT_MS))
+      // Update expiration time
+      activeViewers.set(userId, Date.now() + TIMEOUT_MS)
 
     } else if (action === 'stop') {
       if (activeViewers.has(userId)) {
-        clearTimeout(activeViewers.get(userId)!)
         activeViewers.delete(userId)
         await sendWebhook('viewer_left', userId)
       }
