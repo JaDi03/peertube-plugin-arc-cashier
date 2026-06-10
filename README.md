@@ -81,7 +81,7 @@ sequenceDiagram
 ## 🎥 Proof of Concept
 
 **PeerTube Integration (Viewer Flow)**  
-<video src="media/test-peer-compressed.mp4" controls autoplay loop muted playsinline width="100%"></video>
+*(Arrastra y suelta el video test-peer-compressed.mp4 aquí)*
 
 **Backend Verification & On-Chain Settlement**  
 While the viewer watches the PeerTube video, the companion Arc-Cashier backend silently validates x402 signatures every second. Once the viewer leaves, the unused balance is instantly refunded on the Arc Testnet via Circle CCTP.
