@@ -89,12 +89,12 @@ While the viewer watches the PeerTube video, the companion Arc-Cashier backend s
 <p align="center">
   <img src="media/terminal.PNG" alt="Terminal Logs" width="48%">
   &nbsp;
-  <img src="media/explorer.PNG" alt="Block Explorer" width="48%">
+  <img src="media/terminal-2.PNG" alt="Refund Logs" width="48%">
 </p>
 <p align="center">
-  <img src="media/terminal-2.PNG" alt="Refund Logs" width="48%">
-  &nbsp;
   <img src="media/explorer-2.PNG" alt="Refund Transactions" width="48%">
+  &nbsp;
+  <img src="media/explorer.PNG" alt="Block Explorer" width="48%">
 </p>
 
 [🔍 View Ephemeral Wallet Transactions on Arcscan Testnet](https://testnet.arcscan.app/address/0x77Edf23a726A821BbA0E418d9e79Fca04e194542?tab=txs)
