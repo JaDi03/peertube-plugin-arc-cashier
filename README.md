@@ -97,6 +97,8 @@ While the viewer watches the PeerTube video, the companion Arc-Cashier backend s
   <img src="media/explorer-2.PNG" alt="Refund Transactions" width="48%">
 </p>
 
+[🔍 View Ephemeral Wallet Transactions on Arcscan Testnet](https://testnet.arcscan.app/address/0x77Edf23a726A821BbA0E418d9e79Fca04e194542?tab=txs)
+
 ---
 
 ## 📦 Packaging & Installation
