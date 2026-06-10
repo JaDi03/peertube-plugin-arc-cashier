@@ -78,6 +78,29 @@ sequenceDiagram
 
 ---
 
+## 🎥 Proof of Concept
+
+**PeerTube Integration (Viewer Flow)**  
+<video src="media/test-peer-compressed.mp4" controls autoplay loop muted playsinline width="100%"></video>
+
+**Backend Verification & On-Chain Settlement**  
+While the viewer watches the PeerTube video, the companion Arc-Cashier backend silently validates x402 signatures every second. Once the viewer leaves, the unused balance is instantly refunded on the Arc Testnet via Circle CCTP.
+
+<p align="center">
+  <img src="media/terminal.PNG" alt="Terminal Logs" width="48%">
+  &nbsp;
+  <img src="media/terminal-2.PNG" alt="Refund Logs" width="48%">
+</p>
+<p align="center">
+  <img src="media/explorer-2.PNG" alt="Refund Transactions" width="48%">
+  &nbsp;
+  <img src="media/explorer.PNG" alt="Block Explorer" width="48%">
+</p>
+
+[🔍 View Ephemeral Wallet Transactions on Arcscan Testnet](https://testnet.arcscan.app/address/0x77Edf23a726A821BbA0E418d9e79Fca04e194542?tab=txs)
+
+---
+
 ## 📦 Packaging & Installation
 
 To install this plugin on a production PeerTube instance, you first need to package it into an installable `.tgz` bundle.
