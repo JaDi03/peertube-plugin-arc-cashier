@@ -38,36 +38,67 @@ export async function register (_options: any) {
   script.src = `${baseUrl}/peertube-assets/paywall.js`
   document.head.appendChild(script)
 
-  // 3. Generate or retrieve userId
-  let userId = localStorage.getItem('arc_cashier_user_id')
-  if (!userId) {
-     userId = 'user_' + Math.random().toString(36).substring(2, 15)
-     localStorage.setItem('arc_cashier_user_id', userId)
+  // 3. Helper to get videoId from URL
+  function getCurrentVideoId(): string | null {
+    const match = window.location.pathname.match(/\/w\/([a-zA-Z0-9_-]+)/)
+    if (match) return match[1]
+    const watchMatch = window.location.pathname.match(/\/watch\/([a-zA-Z0-9_-]+)/)
+    if (watchMatch) return watchMatch[1]
+    return null
   }
 
   // 4. Ping Mechanism
   const PING_INTERVAL_MS = 15000 // 15 seconds
   let pingInterval: number | undefined
+  let abortController: AbortController | null = null
 
   const sendPing = async (action: 'start' | 'stop' | 'ping') => {
+      const videoId = getCurrentVideoId()
+      const videoUrl = window.location.href
+
       try {
           await fetch('/plugins/arc-cashier/router/ping', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, userId })
+              body: JSON.stringify({ action, videoId, videoUrl })
           })
       } catch (err) {
           console.error('[arc-cashier] Failed to send ping:', err)
       }
   }
 
-  // Send start immediately so backend knows the viewer is here before they pay
-  sendPing('start')
-  pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
-
   // 5. Hook into video player events for SPA navigation
   let currentVideo: HTMLVideoElement | null = null
 
+  const attachVideoListeners = (video: HTMLVideoElement) => {
+    // 4.1: Avoid memory leaks with AbortController for event listeners
+    if (abortController) {
+       abortController.abort()
+    }
+    abortController = new AbortController()
+    const signal = abortController.signal
+
+    video.addEventListener('play', () => {
+       if (pingInterval) clearInterval(pingInterval)
+       sendPing('start')
+       pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
+    }, { signal })
+
+    // 4.2: Handle `pause` and `ended` events
+    video.addEventListener('pause', () => {
+       if (pingInterval) clearInterval(pingInterval)
+       pingInterval = undefined
+       sendPing('stop')
+    }, { signal })
+
+    video.addEventListener('ended', () => {
+       if (pingInterval) clearInterval(pingInterval)
+       pingInterval = undefined
+       sendPing('stop')
+    }, { signal })
+  }
+
+  // Fallback DOM polling to detect video element creation
   setInterval(() => {
     const isWatchPage = window.location.pathname.includes('/watch') || window.location.pathname.includes('/w/')
     
@@ -83,16 +114,25 @@ export async function register (_options: any) {
     // Video appeared (User navigated TO a video page)
     if (video && video !== currentVideo) {
       currentVideo = video
+      attachVideoListeners(video)
       
-      video.addEventListener('play', () => {
+      // If video is already playing when we find it
+      if (!video.paused && !video.ended) {
          if (pingInterval) clearInterval(pingInterval)
+         sendPing('start')
          pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
-      })
+      }
     }
 
     // Video disappeared (User navigated AWAY from video page to dashboard)
     if (!video && currentVideo) {
       currentVideo = null
+
+      // Clean up listeners
+      if (abortController) {
+         abortController.abort()
+         abortController = null
+      }
 
       // Stop billing pings immediately
       if (pingInterval) {

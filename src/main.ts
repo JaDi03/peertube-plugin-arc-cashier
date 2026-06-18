@@ -1,18 +1,106 @@
 import * as crypto from 'crypto'
 
 const TIMEOUT_MS = 30000
-const activeViewers = new Map<string, number>()
+
+interface ViewerSession {
+  expireTime: number
+  payload: any
+}
+
+const activeViewers = new Map<string, ViewerSession>()
 
 export async function register (options: any) {
   const { registerSetting, settingsManager, getRouter, peertubeHelpers } = options
 
+  // 5.2: Cache base URL to prevent abuse
+  let cachedBaseUrl: string | null = null
+  let baseUrlCacheTime = 0
+
+  const getBaseUrl = async (): Promise<string | null> => {
+    if (cachedBaseUrl && Date.now() - baseUrlCacheTime < 60000) {
+       return cachedBaseUrl
+    }
+    const webhookUrl = await settingsManager.getSetting('webhook-url') as string
+    if (!webhookUrl) return null
+    try {
+      cachedBaseUrl = new URL(webhookUrl).origin
+      baseUrlCacheTime = Date.now()
+      return cachedBaseUrl
+    } catch {
+      return null
+    }
+  }
+
+  // 5.1: Rate limiting Map
+  const pingRateLimits = new Map<string, number>()
+
+  // 3.1: Helper to get MAX_CACHE_SIZE
+  const getMaxActiveViewers = async (): Promise<number> => {
+    const max = await settingsManager.getSetting('max-active-viewers') as string
+    return parseInt(max, 10) || 10000
+  }
+
+  // Helper to send the signed webhook
+  // 3.3: Return boolean to indicate success
+  const sendWebhook = async (event: 'viewer_joined' | 'viewer_left', payloadData: any): Promise<boolean> => {
+    const webhookUrl = await settingsManager.getSetting('webhook-url') as string
+    const webhookSecret = await settingsManager.getSetting('webhook-secret') as string
+
+    if (!webhookUrl || !webhookSecret) {
+      peertubeHelpers.logger.warn('[arc-cashier] Webhook not sent: Plugin configuration missing.')
+      return false
+    }
+
+    const payload = JSON.stringify({ event, ...payloadData })
+    const signature = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex')
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-PeerTube-Signature': signature
+        },
+        body: payload
+      })
+      
+      // 3.3: Verify HTTP responses
+      if (!response.ok) {
+        const errorText = await response.text()
+        peertubeHelpers.logger.error(`[arc-cashier] Webhook rejected: ${response.status} ${errorText}`)
+        return false
+      }
+
+      peertubeHelpers.logger.info(`[arc-cashier] Webhook '${event}' sent for user ${payloadData.userId}.`)
+      return true
+    } catch (err) {
+      peertubeHelpers.logger.error(`[arc-cashier] Error sending webhook: ${err}`)
+      return false
+    }
+  }
+
   // Global checker for inactive viewers
   setInterval(() => {
     const now = Date.now()
-    for (const [userId, expireTime] of activeViewers.entries()) {
-      if (now > expireTime) {
-        activeViewers.delete(userId)
-        sendWebhook('viewer_left', userId).catch(console.error)
+    for (const [userId, session] of activeViewers.entries()) {
+      if (now > session.expireTime) {
+        // 3.4: Fix ghost sessions (await viewer_left before deletion)
+        // Add a small buffer to expireTime to avoid spamming retries every 5s if sidecar is down.
+        // We temporarily bump the expireTime to avoid multiple concurrent requests.
+        session.expireTime = now + 15000 
+        
+        sendWebhook('viewer_left', session.payload).then(success => {
+           if (success) {
+             activeViewers.delete(userId)
+           }
+        })
+      }
+    }
+
+    // Clean up rate limits
+    for (const [userId, lastPing] of pingRateLimits.entries()) {
+      if (now - lastPing > 60000) {
+        pingRateLimits.delete(userId)
       }
     }
   }, 5000)
@@ -36,21 +124,17 @@ export async function register (options: any) {
     private: true
   })
 
+  await registerSetting({
+    name: 'max-active-viewers',
+    label: 'Max Active Viewers',
+    type: 'input',
+    descriptionHTML: 'Maximum number of concurrent active viewers allowed in memory to prevent exhaustion.',
+    default: '10000',
+    private: false
+  })
+
   // 2. Set up internal router
   const router = getRouter()
-
-  // In-memory map to detect when a viewer drops off without sending 'stop'
-
-  // Helper to get base URL from webhook URL
-  const getBaseUrl = async (): Promise<string | null> => {
-    const webhookUrl = await settingsManager.getSetting('webhook-url') as string
-    if (!webhookUrl) return null
-    try {
-      return new URL(webhookUrl).origin
-    } catch {
-      return null
-    }
-  }
 
   // Endpoint for the client script to retrieve the base URL
   router.get('/base-url', async (req: any, res: any) => {
@@ -58,62 +142,114 @@ export async function register (options: any) {
     if (!baseUrl) {
       return res.status(404).json({ error: 'Plugin not fully configured' })
     }
-    // Fix for Docker environments where backend uses host.docker.internal but frontend needs localhost
     if (baseUrl.includes('host.docker.internal')) {
       baseUrl = baseUrl.replace('host.docker.internal', 'localhost')
     }
     res.json({ baseUrl })
   })
 
-  // Helper to send the signed webhook
-  const sendWebhook = async (event: 'viewer_joined' | 'viewer_left', userId: string) => {
-    const webhookUrl = await settingsManager.getSetting('webhook-url') as string
-    const webhookSecret = await settingsManager.getSetting('webhook-secret') as string
-
-    if (!webhookUrl || !webhookSecret) {
-      peertubeHelpers.logger.warn('[arc-cashier] Webhook not sent: Plugin configuration missing.')
-      return
-    }
-
-    const payload = JSON.stringify({ event, userId })
-    const signature = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex')
-
-    try {
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-PeerTube-Signature': signature
-        },
-        body: payload
-      })
-      peertubeHelpers.logger.info(`[arc-cashier] Webhook '${event}' sent for user ${userId}.`)
-    } catch (err) {
-      peertubeHelpers.logger.error(`[arc-cashier] Error sending webhook: ${err}`)
-    }
-  }
-
   // Ping route handler
   router.post('/ping', async (req: any, res: any) => {
-    const { action, userId } = req.body as { action: 'start' | 'stop' | 'ping', userId: string }
+    // 5.3 Runtime type validation
+    if (!req.body || typeof req.body !== 'object') {
+       return res.status(400).json({ error: 'Invalid request body' })
+    }
+    const { action, videoId, videoUrl } = req.body
 
-    if (!userId) {
-       res.status(400).json({ error: 'Missing userId' })
-       return
+    if (typeof videoId !== 'string' || !videoId) {
+       return res.status(400).json({ error: 'Missing or invalid videoId' })
+    }
+    if (typeof videoUrl !== 'string') {
+       return res.status(400).json({ error: 'Missing or invalid videoUrl' })
+    }
+    if (action !== 'start' && action !== 'stop' && action !== 'ping') {
+       return res.status(400).json({ error: 'Invalid action' })
+    }
+
+    let authUser: any = null
+    try {
+      authUser = await peertubeHelpers.user.getAuthUser(res)
+    } catch {
+      // Ignored
+    }
+
+    if (!authUser) {
+      return res.status(401).json({ error: 'Authentication required for Arc-Cashier payments' })
+    }
+
+    // 5.1: Rate limit check (1 req per 5s)
+    const rateLimitKey = authUser.id.toString()
+    const lastPing = pingRateLimits.get(rateLimitKey)
+    if (lastPing && Date.now() - lastPing < 5000) {
+       return res.status(429).json({ error: 'Too many requests' })
+    }
+    pingRateLimits.set(rateLimitKey, Date.now())
+
+    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string || 'default_salt'
+    const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
+    const instanceUrl = peertubeHelpers.config.getWebserverUrl()
+
+    let channelId = ''
+    let channelName = ''
+    try {
+      const video = await peertubeHelpers.videos.loadByIdOrUUID(videoId)
+      if (video && (video as any).VideoChannel) {
+        channelId = (video as any).VideoChannel.name || (video as any).VideoChannel.id.toString()
+        channelName = (video as any).VideoChannel.displayName || channelId
+      }
+    } catch {
+      peertubeHelpers.logger.warn(`[arc-cashier] Could not load video metadata for ${videoId}`)
+    }
+
+    const payloadData = {
+      userId,
+      userDisplayName: authUser.username,
+      videoId,
+      videoUrl,
+      channelId,
+      channelName,
+      instanceUrl,
+      timestamp: new Date().toISOString()
     }
 
     if (action === 'start' || action === 'ping') {
       if (!activeViewers.has(userId)) {
-        await sendWebhook('viewer_joined', userId)
+        // 3.2: Prevent race condition by awaiting webhook before adding to map
+        const success = await sendWebhook('viewer_joined', payloadData)
+        if (!success) {
+           return res.status(502).json({ error: 'Failed to notify payment sidecar' })
+        }
+
+        // 3.1: Enforce Cache Limit via LRU
+        const maxSize = await getMaxActiveViewers()
+        if (activeViewers.size >= maxSize) {
+          const oldestKey = activeViewers.keys().next().value
+          if (oldestKey) {
+             const sessionToEvict = activeViewers.get(oldestKey)
+             activeViewers.delete(oldestKey)
+             // Best-effort cleanup webhook
+             if (sessionToEvict) {
+                sendWebhook('viewer_left', sessionToEvict.payload).catch(() => {})
+             }
+          }
+        }
       }
 
       // Update expiration time
-      activeViewers.set(userId, Date.now() + TIMEOUT_MS)
+      activeViewers.set(userId, {
+        expireTime: Date.now() + TIMEOUT_MS,
+        payload: payloadData
+      })
 
     } else if (action === 'stop') {
       if (activeViewers.has(userId)) {
-        activeViewers.delete(userId)
-        await sendWebhook('viewer_left', userId)
+        // 3.4: Await webhook before local deletion
+        const success = await sendWebhook('viewer_left', payloadData)
+        if (success) {
+           activeViewers.delete(userId)
+        } else {
+           return res.status(502).json({ error: 'Failed to stop session' })
+        }
       }
     }
 
