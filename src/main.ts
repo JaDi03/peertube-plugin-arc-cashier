@@ -51,7 +51,9 @@ export async function register (options: any) {
       return false
     }
 
-    const payload = JSON.stringify({ event, ...payloadData })
+    const timestamp = Date.now()
+    const nonce = crypto.randomBytes(16).toString('hex')
+    const payload = JSON.stringify({ event, timestamp, nonce, ...payloadData })
     const signature = crypto.createHmac('sha256', webhookSecret).update(payload).digest('hex')
 
     try {
@@ -185,7 +187,11 @@ export async function register (options: any) {
     }
     pingRateLimits.set(rateLimitKey, Date.now())
 
-    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string || 'default_salt'
+    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
+    if (!webhookSecret) {
+      peertubeHelpers.logger.error('[arc-cashier] webhook-secret not configured. Refusing to generate userId.')
+      return res.status(503).json({ error: 'Plugin not configured' })
+    }
     const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
     const instanceUrl = peertubeHelpers.config.getWebserverUrl()
 
