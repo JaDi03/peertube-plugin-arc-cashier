@@ -12,16 +12,27 @@ const activeViewers = new Map<string, ViewerSession>()
 export async function register (options: any) {
   const { registerSetting, settingsManager, getRouter, peertubeHelpers } = options
 
-  // Helper to get base URL from webhook URL
+  // 5.2: Cache base URL to prevent abuse
+  let cachedBaseUrl: string | null = null
+  let baseUrlCacheTime = 0
+
   const getBaseUrl = async (): Promise<string | null> => {
+    if (cachedBaseUrl && Date.now() - baseUrlCacheTime < 60000) {
+       return cachedBaseUrl
+    }
     const webhookUrl = await settingsManager.getSetting('webhook-url') as string
     if (!webhookUrl) return null
     try {
-      return new URL(webhookUrl).origin
+      cachedBaseUrl = new URL(webhookUrl).origin
+      baseUrlCacheTime = Date.now()
+      return cachedBaseUrl
     } catch {
       return null
     }
   }
+
+  // 5.1: Rate limiting Map
+  const pingRateLimits = new Map<string, number>()
 
   // 3.1: Helper to get MAX_CACHE_SIZE
   const getMaxActiveViewers = async (): Promise<number> => {
@@ -85,6 +96,13 @@ export async function register (options: any) {
         })
       }
     }
+
+    // Clean up rate limits
+    for (const [userId, lastPing] of pingRateLimits.entries()) {
+      if (now - lastPing > 60000) {
+        pingRateLimits.delete(userId)
+      }
+    }
   }, 5000)
 
   // 1. Register settings for Arc-Cashier integration
@@ -132,10 +150,20 @@ export async function register (options: any) {
 
   // Ping route handler
   router.post('/ping', async (req: any, res: any) => {
-    const { action, videoId, videoUrl } = req.body as { action: 'start' | 'stop' | 'ping', videoId: string, videoUrl: string }
+    // 5.3 Runtime type validation
+    if (!req.body || typeof req.body !== 'object') {
+       return res.status(400).json({ error: 'Invalid request body' })
+    }
+    const { action, videoId, videoUrl } = req.body
 
-    if (!videoId) {
-       return res.status(400).json({ error: 'Missing videoId' })
+    if (typeof videoId !== 'string' || !videoId) {
+       return res.status(400).json({ error: 'Missing or invalid videoId' })
+    }
+    if (typeof videoUrl !== 'string') {
+       return res.status(400).json({ error: 'Missing or invalid videoUrl' })
+    }
+    if (action !== 'start' && action !== 'stop' && action !== 'ping') {
+       return res.status(400).json({ error: 'Invalid action' })
     }
 
     let authUser: any = null
@@ -148,6 +176,14 @@ export async function register (options: any) {
     if (!authUser) {
       return res.status(401).json({ error: 'Authentication required for Arc-Cashier payments' })
     }
+
+    // 5.1: Rate limit check (1 req per 5s)
+    const rateLimitKey = authUser.id.toString()
+    const lastPing = pingRateLimits.get(rateLimitKey)
+    if (lastPing && Date.now() - lastPing < 5000) {
+       return res.status(429).json({ error: 'Too many requests' })
+    }
+    pingRateLimits.set(rateLimitKey, Date.now())
 
     const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string || 'default_salt'
     const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
