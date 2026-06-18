@@ -38,11 +38,13 @@ export async function register (_options: any) {
   script.src = `${baseUrl}/peertube-assets/paywall.js`
   document.head.appendChild(script)
 
-  // 3. Generate or retrieve userId
-  let userId = localStorage.getItem('arc_cashier_user_id')
-  if (!userId) {
-     userId = 'user_' + Math.random().toString(36).substring(2, 15)
-     localStorage.setItem('arc_cashier_user_id', userId)
+  // 3. Helper to get videoId from URL
+  function getCurrentVideoId(): string | null {
+    const match = window.location.pathname.match(/\/w\/([a-zA-Z0-9_-]+)/)
+    if (match) return match[1]
+    const watchMatch = window.location.pathname.match(/\/watch\/([a-zA-Z0-9_-]+)/)
+    if (watchMatch) return watchMatch[1]
+    return null
   }
 
   // 4. Ping Mechanism
@@ -50,11 +52,14 @@ export async function register (_options: any) {
   let pingInterval: number | undefined
 
   const sendPing = async (action: 'start' | 'stop' | 'ping') => {
+      const videoId = getCurrentVideoId()
+      const videoUrl = window.location.href
+
       try {
           await fetch('/plugins/arc-cashier/router/ping', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, userId })
+              body: JSON.stringify({ action, videoId, videoUrl })
           })
       } catch (err) {
           console.error('[arc-cashier] Failed to send ping:', err)
