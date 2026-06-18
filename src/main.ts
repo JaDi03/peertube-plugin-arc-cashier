@@ -1,4 +1,5 @@
 import * as crypto from 'crypto'
+import { RegisterServerOptions } from '@peertube/peertube-types'
 
 const TIMEOUT_MS = 30000
 
@@ -10,7 +11,7 @@ interface ViewerSession {
 
 const activeViewers = new Map<string, ViewerSession>()
 
-export async function register (options: any) {
+export async function register (options: RegisterServerOptions) {
   const { registerSetting, settingsManager, getRouter, peertubeHelpers } = options
 
   // 5.2: Cache base URL to prevent abuse
@@ -145,6 +146,15 @@ export async function register (options: any) {
     private: false
   })
 
+  await registerSetting({
+    name: 'base-rate-per-second',
+    label: 'Base Rate Per Second',
+    type: 'input',
+    descriptionHTML: 'Default Arc-Cashier payment rate per second for videos without explicit pricing (e.g. 0.0001)',
+    default: '0.0001',
+    private: false
+  })
+
   // 2. Set up internal router
   const router = getRouter()
 
@@ -207,15 +217,30 @@ export async function register (options: any) {
 
     let channelId = ''
     let channelName = ''
+    let views = 0
+    let likes = 0
+    let duration = 0
+    let accountName = ''
+
     try {
-      const video = await peertubeHelpers.videos.loadByIdOrUUID(videoId)
-      if (video && (video as any).VideoChannel) {
-        channelId = (video as any).VideoChannel.name || (video as any).VideoChannel.id.toString()
-        channelName = (video as any).VideoChannel.displayName || channelId
+      const video = await peertubeHelpers.videos.loadByIdOrUUID(videoId) as any
+      if (video) {
+        if (video.VideoChannel) {
+          channelId = video.VideoChannel.name || video.VideoChannel.id.toString()
+          channelName = video.VideoChannel.displayName || channelId
+        }
+        views = video.views || 0
+        likes = video.likes || 0
+        duration = video.duration || 0
+        if (video.Account) {
+          accountName = video.Account.name || video.Account.displayName || ''
+        }
       }
     } catch {
       peertubeHelpers.logger.warn(`[arc-cashier] Could not load video metadata for ${videoId}`)
     }
+
+    const ratePerSecond = (await settingsManager.getSetting('base-rate-per-second')) as string || '0.0001'
 
     const payloadData = {
       userId,
@@ -224,6 +249,11 @@ export async function register (options: any) {
       videoUrl,
       channelId,
       channelName,
+      accountName,
+      views,
+      likes,
+      duration,
+      ratePerSecond,
       instanceUrl,
       timestamp: new Date().toISOString()
     }

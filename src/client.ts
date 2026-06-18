@@ -1,8 +1,13 @@
-export async function register (_options: any) {
+import { RegisterClientOptions } from '@peertube/peertube-types/client'
+
+export async function register (options: RegisterClientOptions) {
+  const { peertubeHelpers, registerHook } = options
+
   // 1. Fetch Arc-Cashier Base URL from plugin router
   let baseUrl: string
   try {
-    const response = await fetch('/plugins/arc-cashier/router/base-url')
+    const pluginRoute = peertubeHelpers.getBaseRouterRoute()
+    const response = await fetch(`${pluginRoute}/base-url`)
     const data = await response.json()
     if (data.baseUrl) {
       baseUrl = data.baseUrl
@@ -39,12 +44,19 @@ export async function register (_options: any) {
   document.head.appendChild(script)
 
   // 3. Helper to get videoId from URL
+  let currentVideoId: string | null = null
+
+  registerHook({
+    target: 'action:video-watch.video.loaded',
+    handler: (params: any) => {
+      if (params && params.video) {
+        currentVideoId = params.video.uuid || params.video.id?.toString() || null
+      }
+    }
+  })
+
   function getCurrentVideoId(): string | null {
-    const match = window.location.pathname.match(/\/w\/([a-zA-Z0-9_-]+)/)
-    if (match) return match[1]
-    const watchMatch = window.location.pathname.match(/\/watch\/([a-zA-Z0-9_-]+)/)
-    if (watchMatch) return watchMatch[1]
-    return null
+    return currentVideoId
   }
 
   // 4. Ping Mechanism
@@ -57,7 +69,8 @@ export async function register (_options: any) {
       const videoUrl = window.location.href
 
       try {
-          const response = await fetch('/plugins/arc-cashier/router/ping', {
+          const pluginRoute = peertubeHelpers.getBaseRouterRoute()
+          const response = await fetch(`${pluginRoute}/ping`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ action, videoId, videoUrl })

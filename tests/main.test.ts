@@ -28,10 +28,11 @@ describe('PeerTube Plugin Arc-Cashier - Server', () => {
     await register(options)
     
     // Verify that the webhook settings were registered
-    expect(options.registerSetting).toHaveBeenCalledTimes(3)
+    expect(options.registerSetting).toHaveBeenCalledTimes(4)
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-url' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-secret' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'max-active-viewers' }))
+    expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'base-rate-per-second' }))
     
     // Verify the router was created
     expect(options.getRouter).toHaveBeenCalled()
