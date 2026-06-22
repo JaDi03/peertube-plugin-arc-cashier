@@ -11,7 +11,9 @@
       "script": "dist/client.js",
       "scopes": [
         "video-watch",
-        "video-embed"
+        "video-embed",
+        "video-edit",
+        "common"
       ]
     }
   ],
