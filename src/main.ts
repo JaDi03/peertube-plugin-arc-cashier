@@ -176,7 +176,7 @@ export async function register (options: RegisterServerOptions) {
     if (!req.body || typeof req.body !== 'object') {
        return res.status(400).json({ error: 'Invalid request body' })
     }
-    const { action, videoId, videoUrl } = req.body
+    const { action, videoId, videoUrl, sessionId } = req.body
 
     if (typeof videoId !== 'string' || !videoId) {
        return res.status(400).json({ error: 'Missing or invalid videoId' })
@@ -187,13 +187,12 @@ export async function register (options: RegisterServerOptions) {
     if (action !== 'start' && action !== 'stop' && action !== 'ping') {
        return res.status(400).json({ error: 'Invalid action' })
     }
-
-    let authUser: any = null
-    try {
-      authUser = await peertubeHelpers.user.getAuthUser(res)
-    } catch {
-      // Ignored
+    // sessionId is set by paywall.js in the browser's localStorage (arc_cashier_user_id)
+    if (typeof sessionId !== 'string' || !sessionId || !sessionId.startsWith('arc_')) {
+       return res.status(400).json({ error: 'Missing or invalid sessionId' })
     }
+
+    // No PeerTube authentication required. Identity is provided by the paywall's sessionId.
 
     let channelId = ''
     let channelName = ''
@@ -233,24 +232,22 @@ export async function register (options: RegisterServerOptions) {
       peertubeHelpers.logger.warn(`[tessera] Could not load video metadata for ${videoId}`)
     }
 
-    if (!authUser) {
-      return res.status(401).json({ error: 'Authentication required for Tessera payments', tesseraMode })
-    }
 
-    // 5.1: Rate limit check (1 req per 5s)
-    const rateLimitKey = authUser.id.toString()
-    const lastPing = pingRateLimits.get(rateLimitKey)
+
+    // 5.1: Rate limit check (1 req per 5s per session)
+    const lastPing = pingRateLimits.get(sessionId)
     if (lastPing && Date.now() - lastPing < 5000) {
        return res.status(429).json({ error: 'Too many requests' })
     }
-    pingRateLimits.set(rateLimitKey, Date.now())
+    pingRateLimits.set(sessionId, Date.now())
 
     const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
     if (!webhookSecret) {
-      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to generate userId.')
+      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to process ping.')
       return res.status(503).json({ error: 'Plugin not configured' })
     }
-    const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
+    // Use the paywall's sessionId directly — must match what paywall.js sends to /register-session
+    const userId = sessionId
     const instanceUrl = peertubeHelpers.config.getWebserverUrl()
 
     // Video metadata loading was moved above auth check
@@ -260,7 +257,6 @@ export async function register (options: RegisterServerOptions) {
 
     const payloadData = {
       userId,
-      userDisplayName: authUser.username,
       videoId,
       videoUrl,
       channelId,
