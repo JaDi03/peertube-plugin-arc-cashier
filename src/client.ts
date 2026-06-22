@@ -1,7 +1,7 @@
 import { RegisterClientOptions } from '@peertube/peertube-types/client'
 
 export async function register (options: RegisterClientOptions) {
-  const { peertubeHelpers, registerHook } = options
+  const { peertubeHelpers, registerHook, registerVideoField } = options
 
   // 1. Fetch Tessera Base URL from plugin router
   let baseUrl: string
@@ -43,7 +43,32 @@ export async function register (options: RegisterClientOptions) {
   script.src = `${baseUrl}/peertube-assets/paywall.js`
   document.head.appendChild(script)
 
-  // 3. Helper to get videoId from URL
+  // 3. Register custom fields in video upload/edit form
+  const modeField = {
+    name: 'tessera-mode',
+    label: 'Tessera Monetization Mode',
+    descriptionHTML: 'Choose how viewers pay for this video.',
+    type: 'select' as const,
+    options: [
+        { value: 'pay-per-second', label: '⚡ Pay-per-second' },
+        { value: 'tips', label: '💝 Tips (free to watch)' },
+    ],
+    default: 'pay-per-second'
+  }
+  registerVideoField(modeField, { type: 'upload' })
+  registerVideoField(modeField, { type: 'update' })
+
+  const rateField = {
+    name: 'tessera-rate',
+    label: 'Rate per second (USDC)',
+    type: 'input' as const,
+    default: '0.0001',
+    descriptionHTML: 'Only applies to pay-per-second mode.'
+  }
+  registerVideoField(rateField, { type: 'upload' })
+  registerVideoField(rateField, { type: 'update' })
+
+  // 4. Helper to get videoId from URL
   let currentVideoId: string | null = null
 
   registerHook({
@@ -84,6 +109,11 @@ export async function register (options: RegisterClientOptions) {
                   }
               } else if (response.status === 429) {
                   console.warn('[tessera] Rate limited. Skipping this ping.')
+              }
+          } else {
+              const data = await response.json()
+              if (data.tesseraMode) {
+                  document.body.setAttribute('data-tessera-mode', data.tesseraMode)
               }
           }
       } catch (err) {

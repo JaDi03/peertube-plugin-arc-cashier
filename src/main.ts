@@ -221,6 +221,8 @@ export async function register (options: RegisterServerOptions) {
     let likes = 0
     let duration = 0
     let accountName = ''
+    let tesseraMode = 'pay-per-second'
+    let tesseraRate = ''
 
     try {
       const video = await peertubeHelpers.videos.loadByIdOrUUID(videoId) as any
@@ -235,12 +237,24 @@ export async function register (options: RegisterServerOptions) {
         if (video.Account) {
           accountName = video.Account.name || video.Account.displayName || ''
         }
+        if (video.pluginData) {
+          let pData = video.pluginData;
+          if (typeof pData === 'string') {
+              try { pData = JSON.parse(pData) } catch { /* ignore parse error */ }
+          }
+          if (pData) {
+              const myData = pData['peertube-plugin-tessera'] || pData;
+              if (myData['tessera-mode']) tesseraMode = myData['tessera-mode']
+              if (myData['tessera-rate']) tesseraRate = myData['tessera-rate']
+          }
+        }
       }
     } catch {
       peertubeHelpers.logger.warn(`[tessera] Could not load video metadata for ${videoId}`)
     }
 
-    const ratePerSecond = (await settingsManager.getSetting('base-rate-per-second')) as string || '0.0001'
+    const globalRate = (await settingsManager.getSetting('base-rate-per-second')) as string || '0.0001'
+    const ratePerSecond = tesseraRate || globalRate
 
     const payloadData = {
       userId,
@@ -253,6 +267,7 @@ export async function register (options: RegisterServerOptions) {
       views,
       likes,
       duration,
+      tesseraMode,
       ratePerSecond,
       instanceUrl,
       timestamp: new Date().toISOString()
@@ -303,7 +318,7 @@ export async function register (options: RegisterServerOptions) {
       }
     }
 
-    res.json({ success: true })
+    res.json({ success: true, tesseraMode, ratePerSecond })
   })
 }
 
