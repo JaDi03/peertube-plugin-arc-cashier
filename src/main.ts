@@ -195,26 +195,6 @@ export async function register (options: RegisterServerOptions) {
       // Ignored
     }
 
-    if (!authUser) {
-      return res.status(401).json({ error: 'Authentication required for Tessera payments' })
-    }
-
-    // 5.1: Rate limit check (1 req per 5s)
-    const rateLimitKey = authUser.id.toString()
-    const lastPing = pingRateLimits.get(rateLimitKey)
-    if (lastPing && Date.now() - lastPing < 5000) {
-       return res.status(429).json({ error: 'Too many requests' })
-    }
-    pingRateLimits.set(rateLimitKey, Date.now())
-
-    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
-    if (!webhookSecret) {
-      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to generate userId.')
-      return res.status(503).json({ error: 'Plugin not configured' })
-    }
-    const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
-    const instanceUrl = peertubeHelpers.config.getWebserverUrl()
-
     let channelId = ''
     let channelName = ''
     let views = 0
@@ -252,6 +232,28 @@ export async function register (options: RegisterServerOptions) {
     } catch {
       peertubeHelpers.logger.warn(`[tessera] Could not load video metadata for ${videoId}`)
     }
+
+    if (!authUser) {
+      return res.status(401).json({ error: 'Authentication required for Tessera payments', tesseraMode })
+    }
+
+    // 5.1: Rate limit check (1 req per 5s)
+    const rateLimitKey = authUser.id.toString()
+    const lastPing = pingRateLimits.get(rateLimitKey)
+    if (lastPing && Date.now() - lastPing < 5000) {
+       return res.status(429).json({ error: 'Too many requests' })
+    }
+    pingRateLimits.set(rateLimitKey, Date.now())
+
+    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
+    if (!webhookSecret) {
+      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to generate userId.')
+      return res.status(503).json({ error: 'Plugin not configured' })
+    }
+    const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
+    const instanceUrl = peertubeHelpers.config.getWebserverUrl()
+
+    // Video metadata loading was moved above auth check
 
     const globalRate = (await settingsManager.getSetting('base-rate-per-second')) as string || '0.0001'
     const ratePerSecond = tesseraRate || globalRate

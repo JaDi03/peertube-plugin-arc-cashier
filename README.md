@@ -3,7 +3,7 @@
 <div align="center">
   <!-- Row 1: Status Badges -->
   <img src="https://img.shields.io/badge/Build-Passing-brightgreen?style=for-the-badge" alt="Build Status">
-  <img src="https://img.shields.io/badge/Version-1.0.10-blue?style=for-the-badge" alt="Version">
+  <img src="https://img.shields.io/badge/Version-1.0.14-blue?style=for-the-badge" alt="Version">
   <img src="https://img.shields.io/badge/License-Apache_2.0-green?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/Node->=18-yellow?style=for-the-badge" alt="Node Version">
   <br>
@@ -116,49 +116,35 @@ While the viewer watches the PeerTube video, the companion Tessera backend silen
 
 To install this plugin on a production PeerTube instance, you first need to package it into an installable `.tgz` bundle.
 
-### Prerequisites
-- [Node.js](https://nodejs.org/) v18+
-- An operational [PeerTube](https://joinpeertube.org/) instance
+### Option A: Automated Installation via Script (Recommended for Docker/VPS)
 
-### 1. Build and Package
-Run these commands on your local machine to compile the TypeScript and generate the tarball:
+If your PeerTube instance runs on Docker (which is the standard for most VPS installations), we provide a fully automated script that builds the plugin, dynamically detects your PeerTube container, transfers the files, installs the plugin, and restarts the instance safely.
 
 ```bash
+# 1. Clone the repository
 git clone https://github.com/JaDi03/peertube-plugin-tessera.git
 cd peertube-plugin-tessera
-npm install
-npm run build
-npm pack
+
+# 2. Run the automated deployment script
+./update-plugin.sh
 ```
 
-### 2. Install on PeerTube
-1. Log in to your PeerTube instance as an **Administrator**.
-2. Navigate to **Administration** -> **Plugins/Themes**.
-3. Go to the **Install** tab.
-4. Click **Browse...** and select the `.tgz` file generated.
+### Option B: Manual Installation (Web UI)
+
+If you do not have SSH access to the server or prefer using the PeerTube interface:
+
+1. Clone the repository and build the tarball locally:
+   ```bash
+   git clone https://github.com/JaDi03/peertube-plugin-tessera.git
+   cd peertube-plugin-tessera
+   npm install
+   npm run build
+   npm pack
+   ```
+2. Log in to your PeerTube instance as an **Administrator**.
+3. Navigate to **Administration** -> **Plugins/Themes** -> **Install** tab.
+4. Click **Browse...** and select the `.tgz` file generated in Step 1.
 5. Click **Install**.
-
-### 3. Docker CLI Installation (Advanced / Headless)
-If you are developing locally with Docker (`docker-peertube-peertube-1`):
-
-```bash
-# 1. Build locally
-npm run build && npm pack
-
-# 2. Transfer tarball
-docker exec docker-peertube-peertube-1 sh -c "rm -rf /tmp/peertube-plugin-tessera*"
-docker cp peertube-plugin-tessera-1.0.10.tgz docker-peertube-peertube-1:/tmp/
-
-# 3. Extract and Install
-docker exec docker-peertube-peertube-1 sh -c "
-  mkdir -p /tmp/peertube-plugin-tessera && 
-  tar -xzf /tmp/peertube-plugin-tessera-1.0.10.tgz -C /tmp/peertube-plugin-tessera --strip-components=1 &&
-  npm run plugin:install -- --plugin-path /tmp/peertube-plugin-tessera
-"
-
-# 4. Restart PeerTube
-docker restart docker-peertube-peertube-1
-```
 
 ### 4. Configuration
 Once installed, click on the **Settings** button next to the plugin to configure the connection:

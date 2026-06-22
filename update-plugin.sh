@@ -18,7 +18,7 @@ if [ -z "$TARBALL" ]; then
 fi
 
 # Find the PeerTube container dynamically
-CONTAINER=${PEERTUBE_CONTAINER:-$(docker ps --format '{{.Names}}' | awk '/peertube/ && !/redis/ && !/postgres/ && !/postfix/ {print; exit}')}
+CONTAINER=${PEERTUBE_CONTAINER:-$(docker ps --format '{{.Names}}' | awk '/peertube/ && !/redis/ && !/postgres/ && !/postfix/ && !/webserver/ && !/reloader/ {print; exit}')}
 
 if [ -z "$CONTAINER" ]; then
     echo "❌ Error: Could not find PeerTube container. Is Docker running?"
@@ -38,10 +38,23 @@ docker cp $TARBALL $CONTAINER:/tmp/
 
 echo "⚙️ Installing the plugin inside the container..."
 
-# Extract and install using the PeerTube CLI
+# Clean corrupt pnpm state and install fresh
 docker exec $CONTAINER sh -c "
+  echo '🧹 Cleaning corrupt plugin state...' &&
+  rm -rf /data/plugins/node_modules/peertube-plugin-tessera* &&
+  rm -f /data/plugins/pnpm-lock.yaml &&
+  node -e \"
+    const fs = require('fs');
+    const path = '/data/plugins/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    if (pkg.dependencies) delete pkg.dependencies['peertube-plugin-tessera'];
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
+    console.log('Cleaned package.json');
+  \" &&
+  rm -rf /tmp/peertube-plugin-tessera &&
   mkdir -p /tmp/peertube-plugin-tessera &&
   tar -xzf /tmp/$TARBALL -C /tmp/peertube-plugin-tessera --strip-components=1 &&
+  echo '📥 Running plugin:install...' &&
   npm run plugin:install -- --plugin-path /tmp/peertube-plugin-tessera
 "
 
