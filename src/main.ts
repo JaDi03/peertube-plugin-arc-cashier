@@ -120,6 +120,15 @@ export async function register (options: RegisterServerOptions) {
 
   // 1. Register settings for Tessera integration
   await registerSetting({
+    name: 'tessera-base-url',
+    label: 'Tessera Base URL',
+    type: 'input',
+    descriptionHTML: 'The public URL of your Tessera backend (e.g. https://tessera.try-tessera.xyz)',
+    default: '',
+    private: false
+  })
+
+  await registerSetting({
     name: 'webhook-url',
     label: 'Tessera Webhook URL',
     type: 'input',
