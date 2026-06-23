@@ -120,6 +120,15 @@ export async function register (options: RegisterServerOptions) {
 
   // 1. Register settings for Tessera integration
   await registerSetting({
+    name: 'tessera-base-url',
+    label: 'Tessera Base URL',
+    type: 'input',
+    descriptionHTML: 'The public URL of your Tessera backend (e.g. https://tessera.try-tessera.xyz)',
+    default: '',
+    private: false
+  })
+
+  await registerSetting({
     name: 'webhook-url',
     label: 'Tessera Webhook URL',
     type: 'input',
@@ -176,7 +185,7 @@ export async function register (options: RegisterServerOptions) {
     if (!req.body || typeof req.body !== 'object') {
        return res.status(400).json({ error: 'Invalid request body' })
     }
-    const { action, videoId, videoUrl } = req.body
+    const { action, videoId, videoUrl, sessionId } = req.body
 
     if (typeof videoId !== 'string' || !videoId) {
        return res.status(400).json({ error: 'Missing or invalid videoId' })
@@ -187,33 +196,12 @@ export async function register (options: RegisterServerOptions) {
     if (action !== 'start' && action !== 'stop' && action !== 'ping') {
        return res.status(400).json({ error: 'Invalid action' })
     }
-
-    let authUser: any = null
-    try {
-      authUser = await peertubeHelpers.user.getAuthUser(res)
-    } catch {
-      // Ignored
+    // sessionId is set by paywall.js in the browser's localStorage (arc_cashier_user_id)
+    if (typeof sessionId !== 'string' || !sessionId || !sessionId.startsWith('arc_')) {
+       return res.status(400).json({ error: 'Missing or invalid sessionId' })
     }
 
-    if (!authUser) {
-      return res.status(401).json({ error: 'Authentication required for Tessera payments' })
-    }
-
-    // 5.1: Rate limit check (1 req per 5s)
-    const rateLimitKey = authUser.id.toString()
-    const lastPing = pingRateLimits.get(rateLimitKey)
-    if (lastPing && Date.now() - lastPing < 5000) {
-       return res.status(429).json({ error: 'Too many requests' })
-    }
-    pingRateLimits.set(rateLimitKey, Date.now())
-
-    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
-    if (!webhookSecret) {
-      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to generate userId.')
-      return res.status(503).json({ error: 'Plugin not configured' })
-    }
-    const userId = crypto.createHmac('sha256', webhookSecret).update(`pt_user_${authUser.id}`).digest('hex').substring(0, 16)
-    const instanceUrl = peertubeHelpers.config.getWebserverUrl()
+    // No PeerTube authentication required. Identity is provided by the paywall's sessionId.
 
     let channelId = ''
     let channelName = ''
@@ -253,12 +241,34 @@ export async function register (options: RegisterServerOptions) {
       peertubeHelpers.logger.warn(`[tessera] Could not load video metadata for ${videoId}`)
     }
 
+
+
+    // 5.1: Rate limit check (1 req per 5s per session)
+    // EXEMPT 'stop' action so billing can be halted immediately without being blocked
+    if (action !== 'stop') {
+        const lastPing = pingRateLimits.get(sessionId)
+        if (lastPing && Date.now() - lastPing < 5000) {
+           return res.status(429).json({ error: 'Too many requests' })
+        }
+        pingRateLimits.set(sessionId, Date.now())
+    }
+
+    const webhookSecret = (await settingsManager.getSetting('webhook-secret')) as string
+    if (!webhookSecret) {
+      peertubeHelpers.logger.error('[tessera] webhook-secret not configured. Refusing to process ping.')
+      return res.status(503).json({ error: 'Plugin not configured' })
+    }
+    // Use the paywall's sessionId directly — must match what paywall.js sends to /register-session
+    const userId = sessionId
+    const instanceUrl = peertubeHelpers.config.getWebserverUrl()
+
+    // Video metadata loading was moved above auth check
+
     const globalRate = (await settingsManager.getSetting('base-rate-per-second')) as string || '0.0001'
     const ratePerSecond = tesseraRate || globalRate
 
     const payloadData = {
       userId,
-      userDisplayName: authUser.username,
       videoId,
       videoUrl,
       channelId,
@@ -275,15 +285,16 @@ export async function register (options: RegisterServerOptions) {
 
     if (action === 'start' || action === 'ping') {
       if (!activeViewers.has(userId)) {
-        // 3.2: Prevent race condition by awaiting webhook before adding to map
-        const success = await sendWebhook('viewer_joined', payloadData)
-        if (!success) {
-           return res.status(502).json({ error: 'Failed to notify payment sidecar' })
-        }
+        // SYNCHRONOUSLY add to activeViewers to prevent race conditions with 'stop'
+        activeViewers.set(userId, {
+          expireTime: Date.now() + TIMEOUT_MS,
+          lastAccessTime: Date.now(),
+          payload: payloadData
+        })
 
-        // 3.1: Enforce Cache Limit via LRU
+        // Enforce Cache Limit via LRU
         const maxSize = await getMaxActiveViewers()
-        if (activeViewers.size >= maxSize) {
+        if (activeViewers.size > maxSize) {
           const entries = [...activeViewers.entries()]
           entries.sort((a, b) => a[1].lastAccessTime - b[1].lastAccessTime)
           const lruKey = entries[0][0]
@@ -291,29 +302,34 @@ export async function register (options: RegisterServerOptions) {
           if (lruKey) {
              const sessionToEvict = activeViewers.get(lruKey)
              activeViewers.delete(lruKey)
-             // Best-effort cleanup webhook
              if (sessionToEvict) {
                 sendWebhook('viewer_left', sessionToEvict.payload).catch(() => {})
              }
           }
         }
-      }
 
-      // Update expiration time
-      activeViewers.set(userId, {
-        expireTime: Date.now() + TIMEOUT_MS,
-        lastAccessTime: Date.now(),
-        payload: payloadData
-      })
+        const success = await sendWebhook('viewer_joined', payloadData)
+        if (!success) {
+           activeViewers.delete(userId)
+           return res.status(502).json({ error: 'Failed to notify payment sidecar' })
+        }
+      } else {
+        // Update expiration time
+        const session = activeViewers.get(userId)
+        if (session) {
+          session.expireTime = Date.now() + TIMEOUT_MS
+          session.lastAccessTime = Date.now()
+          session.payload = payloadData
+        }
+      }
 
     } else if (action === 'stop') {
       if (activeViewers.has(userId)) {
-        // 3.4: Await webhook before local deletion
+        // SYNCHRONOUSLY delete to prevent race condition if 'start' webhook is lagging
+        activeViewers.delete(userId)
         const success = await sendWebhook('viewer_left', payloadData)
-        if (success) {
-           activeViewers.delete(userId)
-        } else {
-           return res.status(502).json({ error: 'Failed to stop session' })
+        if (!success) {
+           return res.status(502).json({ error: 'Failed to stop session webhook' })
         }
       }
     }

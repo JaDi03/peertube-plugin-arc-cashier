@@ -28,7 +28,8 @@ describe('PeerTube Plugin Tessera - Server', () => {
     await register(options)
     
     // Verify that the webhook settings were registered
-    expect(options.registerSetting).toHaveBeenCalledTimes(4)
+    expect(options.registerSetting).toHaveBeenCalledTimes(5)
+    expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'tessera-base-url' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-url' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-secret' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'max-active-viewers' }))

@@ -17,24 +17,48 @@ if [ -z "$TARBALL" ]; then
     exit 1
 fi
 
+# Find the PeerTube container dynamically
+CONTAINER=${PEERTUBE_CONTAINER:-$(docker ps --format '{{.Names}}' | awk '/peertube/ && !/redis/ && !/postgres/ && !/postfix/ && !/webserver/ && !/reloader/ {print; exit}')}
+
+if [ -z "$CONTAINER" ]; then
+    echo "❌ Error: Could not find PeerTube container. Is Docker running?"
+    echo "You can manually set the container name like this:"
+    echo "PEERTUBE_CONTAINER=my_peertube_container ./update-plugin.sh"
+    exit 1
+fi
+
+echo "🎯 Using PeerTube container: $CONTAINER"
 echo "🚀 Transferring $TARBALL to the PeerTube container..."
 
 # Remove any previous leftover files
-docker exec docker-peertube-peertube-1 sh -c "rm -rf /tmp/peertube-plugin-tessera*"
+docker exec $CONTAINER sh -c "rm -rf /tmp/peertube-plugin-tessera*"
 
 # Copy the new tarball
-docker cp $TARBALL docker-peertube-peertube-1:/tmp/
+docker cp $TARBALL $CONTAINER:/tmp/
 
 echo "⚙️ Installing the plugin inside the container..."
 
-# Extract and install using the PeerTube CLI
-docker exec docker-peertube-peertube-1 sh -c "
+# Clean corrupt pnpm state and install fresh
+docker exec $CONTAINER sh -c "
+  echo '🧹 Cleaning corrupt plugin state...' &&
+  rm -rf /data/plugins/node_modules/peertube-plugin-tessera* &&
+  rm -f /data/plugins/pnpm-lock.yaml &&
+  node -e \"
+    const fs = require('fs');
+    const path = '/data/plugins/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    if (pkg.dependencies) delete pkg.dependencies['peertube-plugin-tessera'];
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
+    console.log('Cleaned package.json');
+  \" &&
+  rm -rf /tmp/peertube-plugin-tessera &&
   mkdir -p /tmp/peertube-plugin-tessera &&
   tar -xzf /tmp/$TARBALL -C /tmp/peertube-plugin-tessera --strip-components=1 &&
+  echo '📥 Running plugin:install...' &&
   npm run plugin:install -- --plugin-path /tmp/peertube-plugin-tessera
 "
 
 echo "🔄 Restarting PeerTube to apply changes..."
-docker restart docker-peertube-peertube-1
+docker restart $CONTAINER
 
 echo "✅ Plugin update complete!"
