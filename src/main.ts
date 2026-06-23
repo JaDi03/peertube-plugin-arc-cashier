@@ -7,9 +7,23 @@ interface ViewerSession {
   expireTime: number
   lastAccessTime: number
   payload: any
+  pendingAction?: 'stop' | null
 }
 
 const activeViewers = new Map<string, ViewerSession>()
+const actionQueues = new Map<string, Promise<any>>()
+
+const enqueueAction = async (userId: string, action: () => Promise<any>): Promise<any> => {
+    const currentQueue = actionQueues.get(userId) || Promise.resolve()
+    const newQueue = currentQueue.then(action, action)
+    actionQueues.set(userId, newQueue)
+    
+    newQueue.finally(() => {
+        if (actionQueues.get(userId) === newQueue) actionQueues.delete(userId)
+    })
+    
+    return newQueue
+}
 
 export async function register (options: RegisterServerOptions) {
   const { registerSetting, settingsManager, getRouter, peertubeHelpers } = options
@@ -96,15 +110,18 @@ export async function register (options: RegisterServerOptions) {
   setInterval(() => {
     const now = Date.now()
     for (const [userId, session] of activeViewers.entries()) {
-      if (now > session.expireTime) {
+      if (now > session.expireTime && session.pendingAction !== 'stop') {
         // 3.4: Fix ghost sessions (await viewer_left before deletion)
         // Add a small buffer to expireTime to avoid spamming retries every 5s if sidecar is down.
         // We temporarily bump the expireTime to avoid multiple concurrent requests.
+        session.pendingAction = 'stop'
         session.expireTime = now + 15000 
         
         sendWebhook('viewer_left', session.payload).then(success => {
            if (success) {
              activeViewers.delete(userId)
+           } else {
+             session.pendingAction = null
            }
         })
       }
@@ -283,58 +300,71 @@ export async function register (options: RegisterServerOptions) {
       timestamp: new Date().toISOString()
     }
 
-    if (action === 'start' || action === 'ping') {
-      if (!activeViewers.has(userId)) {
-        // SYNCHRONOUSLY add to activeViewers to prevent race conditions with 'stop'
-        activeViewers.set(userId, {
-          expireTime: Date.now() + TIMEOUT_MS,
-          lastAccessTime: Date.now(),
-          payload: payloadData
-        })
+    await enqueueAction(userId, async () => {
+      if (action === 'start' || action === 'ping') {
+        if (!activeViewers.has(userId)) {
+          // SYNCHRONOUSLY add to activeViewers to prevent race conditions with 'stop'
+          activeViewers.set(userId, {
+            expireTime: Date.now() + TIMEOUT_MS,
+            lastAccessTime: Date.now(),
+            payload: payloadData
+          })
 
-        // Enforce Cache Limit via LRU
-        const maxSize = await getMaxActiveViewers()
-        if (activeViewers.size > maxSize) {
-          const entries = [...activeViewers.entries()]
-          entries.sort((a, b) => a[1].lastAccessTime - b[1].lastAccessTime)
-          const lruKey = entries[0][0]
-          
-          if (lruKey) {
-             const sessionToEvict = activeViewers.get(lruKey)
-             activeViewers.delete(lruKey)
-             if (sessionToEvict) {
-                sendWebhook('viewer_left', sessionToEvict.payload).catch(() => {})
-             }
+          // Enforce Cache Limit via LRU
+          const maxSize = await getMaxActiveViewers()
+          if (activeViewers.size > maxSize) {
+            const entries = [...activeViewers.entries()]
+            entries.sort((a, b) => a[1].lastAccessTime - b[1].lastAccessTime)
+            const lruKey = entries[0][0]
+            
+            if (lruKey) {
+               const sessionToEvict = activeViewers.get(lruKey)
+               activeViewers.delete(lruKey)
+               if (sessionToEvict) {
+                  sendWebhook('viewer_left', sessionToEvict.payload).catch(() => {})
+               }
+            }
+          }
+
+          const success = await sendWebhook('viewer_joined', payloadData)
+          if (!success) {
+             activeViewers.delete(userId)
+             res.status(502).json({ error: 'Failed to notify payment sidecar' })
+             return
+          }
+        } else {
+          // Update expiration time
+          const session = activeViewers.get(userId)
+          if (session) {
+            session.expireTime = Date.now() + TIMEOUT_MS
+            session.lastAccessTime = Date.now()
+            session.payload = payloadData
           }
         }
 
-        const success = await sendWebhook('viewer_joined', payloadData)
-        if (!success) {
-           activeViewers.delete(userId)
-           return res.status(502).json({ error: 'Failed to notify payment sidecar' })
-        }
-      } else {
-        // Update expiration time
+      } else if (action === 'stop') {
         const session = activeViewers.get(userId)
         if (session) {
-          session.expireTime = Date.now() + TIMEOUT_MS
-          session.lastAccessTime = Date.now()
-          session.payload = payloadData
+          session.pendingAction = 'stop'
+          // Send webhook BEFORE deleting to avoid ghost sessions
+          const success = await sendWebhook('viewer_left', payloadData)
+          const currentSession = activeViewers.get(userId)
+          if (currentSession) {
+             currentSession.pendingAction = null
+             if (success) {
+                activeViewers.delete(userId)
+             } else {
+                res.status(502).json({ error: 'Failed to stop session webhook' })
+                return
+             }
+          }
         }
       }
+    })
 
-    } else if (action === 'stop') {
-      if (activeViewers.has(userId)) {
-        // SYNCHRONOUSLY delete to prevent race condition if 'start' webhook is lagging
-        activeViewers.delete(userId)
-        const success = await sendWebhook('viewer_left', payloadData)
-        if (!success) {
-           return res.status(502).json({ error: 'Failed to stop session webhook' })
-        }
-      }
+    if (!res.headersSent) {
+      res.json({ success: true, tesseraMode, ratePerSecond })
     }
-
-    res.json({ success: true, tesseraMode, ratePerSecond })
   })
 }
 

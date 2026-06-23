@@ -113,12 +113,20 @@ export async function register (options: RegisterClientOptions) {
       }
   }
 
+  const isPaywallUnlocked = (): boolean => {
+      try { return !document.body.classList.contains('arc-locked') }
+      catch { return false }
+  }
+
   // 4. Ping Mechanism
   const PING_INTERVAL_MS = 15000 // 15 seconds
   let pingInterval: number | undefined
   let abortController: AbortController | null = null
+  let pendingPing: Promise<any> | null = null
 
-  const sendPing = async (action: 'start' | 'stop' | 'ping') => {
+  const sendPing = async (action: 'start' | 'stop' | 'ping'): Promise<void> => {
+      if (action !== 'stop' && !isPaywallUnlocked()) return
+
       const videoId = getCurrentVideoId()
       const videoUrl = window.location.href
       const sessionId = getPaywallUserId()
@@ -129,32 +137,61 @@ export async function register (options: RegisterClientOptions) {
           return
       }
 
-      try {
-          const pluginRoute = peertubeHelpers.getBaseRouterRoute()
-          const response = await fetch(`${pluginRoute}/ping`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, videoId, videoUrl, sessionId })
-          })
-          if (!response.ok) {
-              if (response.status === 429) {
-                  console.warn('[tessera] Rate limited. Skipping this ping.')
-              } else {
-                  console.warn(`[tessera] Ping failed with status: ${response.status}`)
-              }
-          } else {
-              const data = await response.json()
-              if (data.tesseraMode) {
-                  document.body.setAttribute('data-tessera-mode', data.tesseraMode)
-              }
-          }
-      } catch (err) {
-          console.error('[tessera] Failed to send ping:', err)
+      if (pendingPing) {
+          try { await pendingPing } catch { /* ignore */ }
       }
+
+      pendingPing = (async () => {
+          try {
+              const pluginRoute = peertubeHelpers.getBaseRouterRoute()
+              const response = await fetch(`${pluginRoute}/ping`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ action, videoId, videoUrl, sessionId })
+              })
+              if (!response.ok) {
+                  if (response.status === 429) {
+                      console.warn('[tessera] Rate limited. Skipping this ping.')
+                  } else {
+                      console.warn(`[tessera] Ping failed with status: ${response.status}`)
+                  }
+              } else {
+                  const data = await response.json()
+                  if (data.tesseraMode) {
+                      document.body.setAttribute('data-tessera-mode', data.tesseraMode)
+                  }
+              }
+          } catch (err) {
+              console.error('[tessera] Failed to send ping:', err)
+          } finally {
+              pendingPing = null
+          }
+      })()
+
+      await pendingPing
   }
 
   // 5. Hook into video player events for SPA navigation
   let currentVideo: HTMLVideoElement | null = null
+  let isCleaningUp = false
+  let hasStarted = false
+
+  const cleanupVideoState = async () => {
+      if (isCleaningUp) return
+      isCleaningUp = true
+      hasStarted = false
+      if (pingInterval) {
+          clearInterval(pingInterval)
+          pingInterval = undefined
+      }
+      await sendPing('stop')
+      if (abortController) {
+          abortController.abort()
+          abortController = null
+      }
+      currentVideo = null
+      isCleaningUp = false
+  }
 
   const attachVideoListeners = (video: HTMLVideoElement) => {
     // 4.1: Avoid memory leaks with AbortController for event listeners
@@ -165,6 +202,8 @@ export async function register (options: RegisterClientOptions) {
     const signal = abortController.signal
 
     video.addEventListener('play', () => {
+       if (hasStarted || !isPaywallUnlocked()) return
+       hasStarted = true
        if (pingInterval) clearInterval(pingInterval)
        sendPing('start')
        pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
@@ -172,12 +211,14 @@ export async function register (options: RegisterClientOptions) {
 
     // 4.2: Handle `pause` and `ended` events
     video.addEventListener('pause', () => {
+       hasStarted = false
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
     }, { signal })
 
     video.addEventListener('ended', () => {
+       hasStarted = false
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
@@ -185,7 +226,7 @@ export async function register (options: RegisterClientOptions) {
   }
 
   // Fallback DOM polling to detect video element creation
-  setInterval(() => {
+  setInterval(async () => {
     checkPageVisibility()
 
     const video = document.querySelector('video')
@@ -195,9 +236,10 @@ export async function register (options: RegisterClientOptions) {
       
       // If we had a previous video playing, clean up its interval and stop billing
       if (currentVideo) {
-         if (pingInterval) clearInterval(pingInterval)
-         pingInterval = undefined
-         sendPing('stop')
+         await cleanupVideoState()
+         // cleanupVideoState returns asynchronously, so by the time it finishes,
+         // the DOM might have changed again. Defer attaching listeners to next poll.
+         return
       }
 
       currentVideo = video
@@ -205,28 +247,18 @@ export async function register (options: RegisterClientOptions) {
       
       // If video is already playing when we find it
       if (!video.paused && !video.ended) {
-         if (pingInterval) clearInterval(pingInterval)
-         sendPing('start')
-         pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
+         if (!hasStarted && isPaywallUnlocked()) {
+             hasStarted = true
+             if (pingInterval) clearInterval(pingInterval)
+             sendPing('start')
+             pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
+         }
       }
     }
 
     // Video disappeared (User navigated AWAY from video page to dashboard)
     if (!video && currentVideo) {
-      currentVideo = null
-
-      // Clean up listeners
-      if (abortController) {
-         abortController.abort()
-         abortController = null
-      }
-
-      // Stop billing pings immediately
-      if (pingInterval) {
-        clearInterval(pingInterval)
-        pingInterval = undefined
-      }
-      sendPing('stop')
+      await cleanupVideoState()
     }
-  }, 200)
+  }, 1000)
 }
