@@ -201,6 +201,11 @@ export async function register (options: RegisterClientOptions) {
     abortController = new AbortController()
     const { signal } = abortController
 
+    // Take manual control over Tessera's visual paywall clock
+    if (typeof window !== 'undefined') {
+        (window as any).arcManualMediaControl = true;
+    }
+
     // 4.1: Handle `play` event
     video.addEventListener('play', () => {
        console.log('[tessera] PLAY event detected. isPaywallUnlocked?', isPaywallUnlocked())
@@ -208,6 +213,9 @@ export async function register (options: RegisterClientOptions) {
        if (!isPaywallUnlocked()) return
 
        hasStarted = true
+       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
+           (window as any).arcSetMediaPlaying(true);
+       }
        if (pingInterval) clearInterval(pingInterval)
        sendPing('start')
        pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
@@ -217,6 +225,9 @@ export async function register (options: RegisterClientOptions) {
     video.addEventListener('pause', () => {
        console.log('[tessera] PAUSE event detected.')
        hasStarted = false
+       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
+           (window as any).arcSetMediaPlaying(false);
+       }
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
@@ -225,6 +236,9 @@ export async function register (options: RegisterClientOptions) {
     video.addEventListener('ended', () => {
        console.log('[tessera] ENDED event detected.')
        hasStarted = false
+       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
+           (window as any).arcSetMediaPlaying(false);
+       }
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
