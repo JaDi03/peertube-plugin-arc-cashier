@@ -260,11 +260,10 @@ export async function register (options: RegisterServerOptions) {
 
 
 
-    // 5.1: Rate limit check (1 req per 5s per session)
-    // EXEMPT 'stop' action so billing can be halted immediately without being blocked
+    // 5.1: Rate limit check (1 req per 2s per session)
     if (action !== 'stop') {
         const lastPing = pingRateLimits.get(sessionId)
-        if (lastPing && Date.now() - lastPing < 5000) {
+        if (lastPing && Date.now() - lastPing < 2000) {
            return res.status(429).json({ error: 'Too many requests' })
         }
         pingRateLimits.set(sessionId, Date.now())

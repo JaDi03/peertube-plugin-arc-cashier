@@ -229,7 +229,8 @@ export async function register (options: RegisterClientOptions) {
   setInterval(async () => {
     checkPageVisibility()
 
-    const video = document.querySelector('video')
+    // Specifically target the main Video.js player to avoid grabbing thumbnail preview videos
+    const video = document.querySelector('.vjs-tech, .video-js video, video-player video') as HTMLVideoElement | null
     
     // Video appeared or changed (User navigated to a new video page)
     if (video && video !== currentVideo) {
