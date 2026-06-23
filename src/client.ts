@@ -194,15 +194,19 @@ export async function register (options: RegisterClientOptions) {
   }
 
   const attachVideoListeners = (video: HTMLVideoElement) => {
-    // 4.1: Avoid memory leaks with AbortController for event listeners
+    console.log('[tessera] attachVideoListeners called for video:', video)
     if (abortController) {
-       abortController.abort()
+        abortController.abort()
     }
     abortController = new AbortController()
-    const signal = abortController.signal
+    const { signal } = abortController
 
+    // 4.1: Handle `play` event
     video.addEventListener('play', () => {
-       if (hasStarted || !isPaywallUnlocked()) return
+       console.log('[tessera] PLAY event detected. isPaywallUnlocked?', isPaywallUnlocked())
+       if (hasStarted) return
+       if (!isPaywallUnlocked()) return
+
        hasStarted = true
        if (pingInterval) clearInterval(pingInterval)
        sendPing('start')
@@ -211,6 +215,7 @@ export async function register (options: RegisterClientOptions) {
 
     // 4.2: Handle `pause` and `ended` events
     video.addEventListener('pause', () => {
+       console.log('[tessera] PAUSE event detected.')
        hasStarted = false
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
@@ -218,6 +223,7 @@ export async function register (options: RegisterClientOptions) {
     }, { signal })
 
     video.addEventListener('ended', () => {
+       console.log('[tessera] ENDED event detected.')
        hasStarted = false
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
@@ -234,12 +240,12 @@ export async function register (options: RegisterClientOptions) {
     
     // Video appeared or changed (User navigated to a new video page)
     if (video && video !== currentVideo) {
+      console.log('[tessera] Found new video element:', video)
       
       // If we had a previous video playing, clean up its interval and stop billing
       if (currentVideo) {
+         console.log('[tessera] Cleaning up previous video state.')
          await cleanupVideoState()
-         // cleanupVideoState returns asynchronously, so by the time it finishes,
-         // the DOM might have changed again. Defer attaching listeners to next poll.
          return
       }
 
@@ -248,12 +254,15 @@ export async function register (options: RegisterClientOptions) {
       
       // If video is already playing when we find it
       if (!video.paused && !video.ended) {
+         console.log('[tessera] Video is already playing upon discovery! Sending start.')
          if (!hasStarted && isPaywallUnlocked()) {
              hasStarted = true
              if (pingInterval) clearInterval(pingInterval)
              sendPing('start')
              pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
          }
+      } else {
+         console.log('[tessera] Video discovered in paused/ended state.')
       }
     }
 
