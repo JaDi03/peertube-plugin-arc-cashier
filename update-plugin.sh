@@ -4,9 +4,16 @@ set -e
 # update-plugin.sh
 # This script builds the Tessera plugin and installs it inside the PeerTube Docker container.
 
+echo "🔄 Pulling latest version from GitHub..."
+git fetch origin
+git reset --hard origin/main
+
+
 echo "📦 Building the Tessera Plugin..."
 npm install
 npm run build
+# Remove old tarballs so we don't accidentally deploy them
+rm -f peertube-plugin-tessera-*.tgz
 npm pack
 
 # Find the generated tarball (e.g. peertube-plugin-tessera-1.0.9.tgz)
@@ -40,6 +47,8 @@ echo "⚙️ Installing the plugin inside the container..."
 
 # Clean corrupt pnpm state and install fresh
 docker exec $CONTAINER sh -c "
+  echo '🧹 Uninstalling old plugin version...' &&
+  npm run plugin:uninstall -- --npm-name peertube-plugin-tessera || true &&
   echo '🧹 Cleaning corrupt plugin state...' &&
   rm -rf /data/plugins/node_modules/peertube-plugin-tessera* &&
   rm -f /data/plugins/pnpm-lock.yaml &&

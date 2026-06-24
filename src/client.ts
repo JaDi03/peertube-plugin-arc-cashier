@@ -11,34 +11,31 @@ declare global {
   }
 }
 
-function extractTesseraPluginData (pluginData: unknown): Record<string, string> {
-  if (!pluginData) return {}
-  let pData = pluginData
-  if (typeof pData === 'string') {
-    try { pData = JSON.parse(pData) } catch { return {} }
-  }
-  if (typeof pData !== 'object' || pData === null) return {}
-  const record = pData as Record<string, unknown>
-  const nested = record['peertube-plugin-tessera']
-  if (nested && typeof nested === 'object') {
-    return nested as Record<string, string>
-  }
-  return record as Record<string, string>
-}
+
 
 export async function register (options: RegisterClientOptions) {
   const { peertubeHelpers, registerHook, registerVideoField } = options
 
-  const validateWalletField = async ({ formValues }: { formValues?: Record<string, string> }) => {
-    const mode = formValues?.['tessera-mode'] || 'pay-per-second'
+  const getPluginField = (formValues: any, fieldName: string) => {
+    if (!formValues) return undefined
+    if (formValues[fieldName] !== undefined) return formValues[fieldName]
+    const pData = formValues.pluginData
+    if (!pData) return undefined
+    const ours = pData['peertube-plugin-tessera']
+    if (ours && ours[fieldName] !== undefined) return ours[fieldName]
+    return undefined
+  }
+
+  const validateWalletField = async ({ formValues, value }: { formValues?: any, value?: string }) => {
+    const mode = getPluginField(formValues, 'tessera-mode') || 'pay-per-second'
     if (mode === 'tips') return { error: false }
 
-    const wallet = (formValues?.['tessera-wallet'] || '').trim()
+    const wallet = (value || getPluginField(formValues, 'tessera-wallet') || '').trim()
     if (!wallet) {
       return { error: true, text: 'Creator wallet is required for pay-per-second mode.' }
     }
     if (!EVM_ADDRESS_RE.test(wallet)) {
-      return { error: true, text: 'Enter a valid EVM address (0x + 40 hex chars).' }
+      return { error: true, text: 'Enter a valid Arc Network address (0x + 40 hex chars).' }
     }
     return { error: false }
   }
@@ -53,7 +50,7 @@ export async function register (options: RegisterClientOptions) {
         type: 'select' as const,
         options: [
             { value: 'pay-per-second', label: '⚡ Pay-per-second' },
-            { value: 'tips', label: '💝 Tips (free to watch)' },
+            { value: 'tips', label: '💝 Tips (free to watch) - SOON' },
         ],
         default: 'pay-per-second'
       }
@@ -72,9 +69,9 @@ export async function register (options: RegisterClientOptions) {
 
       const walletField = {
         name: 'tessera-wallet',
-        label: 'Creator Wallet Address (Polygon/EVM)',
+        label: 'Creator Wallet Address (Arc Network)',
         type: 'input' as const,
-        descriptionHTML: 'Your public wallet address on Arc/Polygon/EVM. You will receive USDC earnings here and withdraw via MetaMask.',
+        descriptionHTML: 'Your public wallet address. You will receive USDC earnings on the Arc Network and withdraw via MetaMask.',
         error: validateWalletField
       }
       registerVideoField(walletField, { type: 'upload' })
@@ -116,16 +113,41 @@ export async function register (options: RegisterClientOptions) {
   `
   document.head.appendChild(style)
 
+  let currentVideoId: string | null = null
+  let currentVideoOwner: string | null = null
+  let currentCreatorWallet: string | null = null
+  let creatorPanelEl: HTMLElement | null = null
+
+  const isVideoOwner = (): boolean => {
+    if (!peertubeHelpers.isLoggedIn()) {
+      console.log('[tessera-debug] isVideoOwner: Not logged in.')
+      return false
+    }
+    const user = peertubeHelpers.getUser()
+    console.log(`[tessera-debug] isVideoOwner check -> Logged in as: ${user?.username}, Video owner is: ${currentVideoOwner}`)
+    if (!user?.username || !currentVideoOwner) return false
+    return user.username.toLowerCase() === currentVideoOwner.toLowerCase()
+  }
+
   const checkPageVisibility = () => {
       const isWatchPage = window.location.pathname.includes('/watch') || window.location.pathname.includes('/w/')
-      if (!isWatchPage) {
+      if (!isWatchPage || isVideoOwner()) {
          document.body.classList.add('arc-hide-paywall')
+         document.body.classList.remove('arc-locked')
       } else {
          document.body.classList.remove('arc-hide-paywall')
       }
   }
   // Run immediately to prevent modal flicker
   checkPageVisibility()
+
+  // Prevent paywall.js from forcefully pausing the video for the owner
+  const observer = new MutationObserver(() => {
+    if (isVideoOwner() && document.body.classList.contains('arc-locked')) {
+      document.body.classList.remove('arc-locked')
+    }
+  })
+  observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
 
   // 3. Inject Tessera paywall assets dynamically
   const cssLink = document.createElement('link')
@@ -145,18 +167,7 @@ export async function register (options: RegisterClientOptions) {
   }
   document.head.appendChild(script)
 
-  // 4. Helper to get videoId from URL
-  let currentVideoId: string | null = null
-  let currentVideoOwner: string | null = null
-  let currentCreatorWallet: string | null = null
-  let creatorPanelEl: HTMLElement | null = null
 
-  const isVideoOwner = (): boolean => {
-    if (!peertubeHelpers.isLoggedIn()) return false
-    const user = peertubeHelpers.getUser()
-    if (!user?.username || !currentVideoOwner) return false
-    return user.username.toLowerCase() === currentVideoOwner.toLowerCase()
-  }
 
   const ensureArcNetwork = async (): Promise<void> => {
     if (!window.ethereum) throw new Error('MetaMask not detected')
@@ -254,8 +265,10 @@ export async function register (options: RegisterClientOptions) {
   const renderCreatorPanel = () => {
     const isWatchPage = window.location.pathname.includes('/watch') || window.location.pathname.includes('/w/')
     const wallet = currentCreatorWallet?.trim()
+    const isOwner = isVideoOwner()
 
-    if (!isWatchPage || !wallet || !isVideoOwner()) {
+    if (!isWatchPage || !wallet || !isOwner) {
+      console.log(`[tessera-debug] renderCreatorPanel skipping. isWatchPage: ${isWatchPage}, wallet: ${wallet || 'missing'}, isOwner: ${isOwner}`)
       if (creatorPanelEl) {
         creatorPanelEl.remove()
         creatorPanelEl = null
@@ -368,12 +381,27 @@ export async function register (options: RegisterClientOptions) {
 
   registerHook({
     target: 'action:video-watch.video.loaded',
-    handler: (params: any) => {
+    handler: async (params: any) => {
       if (params && params.video) {
         currentVideoId = params.video.uuid || params.video.id?.toString() || null
         currentVideoOwner = params.video.account?.name || params.video.channel?.ownerAccount?.name || null
-        const pluginData = extractTesseraPluginData(params.video.pluginData)
-        currentCreatorWallet = pluginData['tessera-wallet'] || null
+        
+        // Immediate visibility check to prevent modal flicker
+        checkPageVisibility()
+
+        // Fetch wallet from backend plugin router because frontend params.video doesn't include it
+        if (currentVideoId) {
+            const pluginRoute = peertubeHelpers.getBaseRouterRoute()
+            try {
+                const res = await fetch(`${pluginRoute}/video/${currentVideoId}/tessera-data`)
+                const data = await res.json()
+                currentCreatorWallet = data.wallet || null
+            } catch (err) {
+                console.error('[tessera] Failed to fetch creator wallet:', err)
+                currentCreatorWallet = null
+            }
+        }
+        
         renderCreatorPanel()
       }
     }

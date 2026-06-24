@@ -31,7 +31,7 @@ function validateTesseraWallet (pluginData: unknown): string | null {
     return 'Creator wallet address is required for pay-per-second monetization.'
   }
   if (!EVM_ADDRESS_RE.test(wallet)) {
-    return 'Creator wallet must be a valid Polygon/EVM address (0x…).'
+    return 'Creator wallet must be a valid Arc Network address (0x…).'
   }
   return null
 }
@@ -214,38 +214,45 @@ export async function register (options: RegisterServerOptions) {
     private: false
   })
 
-  const rejectUploadIfWalletInvalid = ({ req }: { req?: { body?: { pluginData?: unknown } } }) => {
-    const error = validateTesseraWallet(req?.body?.pluginData)
+  const rejectUploadIfWalletInvalid = (result: any, params?: any) => {
+    // Some hooks might pass req inside params
+    const req = params?.req
+    const pluginData = req?.body?.pluginData || req?.body?.pluginDataString
+    
+    const error = validateTesseraWallet(pluginData)
     if (error) {
       peertubeHelpers.logger.warn(`[tessera] Upload rejected: ${error}`)
-      return false
+      return {
+        allowed: false,
+        errorMessage: error
+      }
     }
-    return true
+    return result || { allowed: true }
   }
 
   registerHook({
     target: 'filter:api.video.upload.accept.result',
-    handler: rejectUploadIfWalletInvalid as () => unknown
+    handler: rejectUploadIfWalletInvalid as any
   })
 
   registerHook({
     target: 'filter:api.video.pre-import-url.accept.result',
-    handler: rejectUploadIfWalletInvalid as () => unknown
+    handler: rejectUploadIfWalletInvalid as any
   })
 
   registerHook({
     target: 'filter:api.video.pre-import-torrent.accept.result',
-    handler: rejectUploadIfWalletInvalid as () => unknown
+    handler: rejectUploadIfWalletInvalid as any
   })
 
   registerHook({
     target: 'filter:api.video.post-import-url.accept.result',
-    handler: rejectUploadIfWalletInvalid as () => unknown
+    handler: rejectUploadIfWalletInvalid as any
   })
 
   registerHook({
     target: 'filter:api.video.post-import-torrent.accept.result',
-    handler: rejectUploadIfWalletInvalid as () => unknown
+    handler: rejectUploadIfWalletInvalid as any
   })
 
   // 2. Set up internal router
@@ -261,6 +268,24 @@ export async function register (options: RegisterServerOptions) {
       baseUrl = baseUrl.replace('host.docker.internal', 'localhost')
     }
     res.json({ baseUrl })
+  })
+
+  // Endpoint to serve pluginData to the client (since frontend doesn't receive it in the watch hook)
+  router.get('/video/:id/tessera-data', async (req: any, res: any) => {
+    const videoId = req.params.id
+    try {
+      const video = await peertubeHelpers.videos.loadByIdOrUUID(videoId) as any
+      if (!video) return res.status(404).json({ error: 'Video not found' })
+      let wallet = null
+      if (video.pluginData) {
+         const myData = extractTesseraPluginData(video.pluginData)
+         wallet = myData['tessera-wallet'] || null
+      }
+      res.json({ wallet })
+    } catch (err) {
+      peertubeHelpers.logger.warn(`[tessera] Error fetching video data for ${videoId}: ${err}`)
+      res.status(500).json({ error: 'Internal server error' })
+    }
   })
 
   // Ping route handler
