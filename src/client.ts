@@ -176,10 +176,17 @@ export async function register (options: RegisterClientOptions) {
   let isCleaningUp = false
   let hasStarted = false
 
+  const setMediaPlaying = (isPlaying: boolean) => {
+      if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
+          (window as any).arcSetMediaPlaying(isPlaying)
+      }
+  }
+
   const cleanupVideoState = async () => {
       if (isCleaningUp) return
       isCleaningUp = true
       hasStarted = false
+      setMediaPlaying(false)
       if (pingInterval) {
           clearInterval(pingInterval)
           pingInterval = undefined
@@ -209,16 +216,15 @@ export async function register (options: RegisterClientOptions) {
         (window as any).arcManualMediaControl = true;
     }
 
-    // 4.1: Handle `play` event
+    // 4.1: Handle `play` event — UI clock sync is separate from ping dedup (hasStarted)
     video.addEventListener('play', () => {
        console.log('[tessera] PLAY event detected. isPaywallUnlocked?', isPaywallUnlocked())
-       if (hasStarted) return
        if (!isPaywallUnlocked()) return
 
+       setMediaPlaying(true)
+       if (hasStarted) return
+
        hasStarted = true
-       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
-           (window as any).arcSetMediaPlaying(true);
-       }
        if (pingInterval) clearInterval(pingInterval)
        sendPing('start')
        pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
@@ -231,9 +237,7 @@ export async function register (options: RegisterClientOptions) {
        // #endregion
        console.log('[tessera] PAUSE event detected.')
        hasStarted = false
-       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
-           (window as any).arcSetMediaPlaying(false);
-       }
+       setMediaPlaying(false)
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
@@ -242,9 +246,7 @@ export async function register (options: RegisterClientOptions) {
     video.addEventListener('ended', () => {
        console.log('[tessera] ENDED event detected.')
        hasStarted = false
-       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
-           (window as any).arcSetMediaPlaying(false);
-       }
+       setMediaPlaying(false)
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
@@ -280,6 +282,7 @@ export async function register (options: RegisterClientOptions) {
              console.log('[AGENT_LOG] client.ts:autoStart', { sessionId: '2866b9', message: 'auto-start on discovery without arcSetMediaPlaying', data: { hasStarted, hasArcSetMediaPlaying: typeof (window as any).arcSetMediaPlaying === 'function' }, timestamp: Date.now(), hypothesisId: 'C' });
              // #endregion
              hasStarted = true
+             setMediaPlaying(true)
              if (pingInterval) clearInterval(pingInterval)
              sendPing('start')
              pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
