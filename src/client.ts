@@ -84,7 +84,17 @@ export async function register (options: RegisterClientOptions) {
   document.head.appendChild(cssLink)
 
   const script = document.createElement('script')
-  script.src = `${baseUrl}/peertube-assets/paywall.bundle.js`
+  // Cache-bust so browsers pick up rebuilt paywall.bundle.js from Tessera backend
+  script.src = `${baseUrl}/peertube-assets/paywall.bundle.js?v=1.1.1-media-sync`
+  let pendingMediaPlaying: boolean | null = null
+  let paywallScriptLoaded = false
+  script.onload = () => {
+    paywallScriptLoaded = true
+    if (pendingMediaPlaying !== null) {
+      setMediaPlaying(pendingMediaPlaying)
+      pendingMediaPlaying = null
+    }
+  }
   document.head.appendChild(script)
 
   // 4. Helper to get videoId from URL
@@ -179,6 +189,11 @@ export async function register (options: RegisterClientOptions) {
   const setMediaPlaying = (isPlaying: boolean) => {
       if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
           (window as any).arcSetMediaPlaying(isPlaying)
+      } else {
+          // #region agent log
+          console.log('[AGENT_LOG] client.ts:setMediaPlaying-missed', { sessionId: '2866b9', message: 'arcSetMediaPlaying not ready yet', data: { isPlaying, paywallScriptLoaded }, timestamp: Date.now(), hypothesisId: 'C' });
+          // #endregion
+          pendingMediaPlaying = isPlaying
       }
   }
 
