@@ -84,7 +84,17 @@ export async function register (options: RegisterClientOptions) {
   document.head.appendChild(cssLink)
 
   const script = document.createElement('script')
-  script.src = `${baseUrl}/peertube-assets/paywall.bundle.js`
+  // Cache-bust so browsers pick up rebuilt paywall.bundle.js from Tessera backend
+  script.src = `${baseUrl}/peertube-assets/paywall.bundle.js?v=1.1.1-media-sync`
+  let pendingMediaPlaying: boolean | null = null
+  let paywallScriptLoaded = false
+  script.onload = () => {
+    paywallScriptLoaded = true
+    if (pendingMediaPlaying !== null) {
+      setMediaPlaying(pendingMediaPlaying)
+      pendingMediaPlaying = null
+    }
+  }
   document.head.appendChild(script)
 
   // 4. Helper to get videoId from URL
@@ -176,10 +186,22 @@ export async function register (options: RegisterClientOptions) {
   let isCleaningUp = false
   let hasStarted = false
 
+  const setMediaPlaying = (isPlaying: boolean) => {
+      if (typeof window !== 'undefined' && (window as any).arcSetMediaPlaying) {
+          (window as any).arcSetMediaPlaying(isPlaying)
+      } else {
+          // #region agent log
+          console.log('[AGENT_LOG] client.ts:setMediaPlaying-missed', { sessionId: '2866b9', message: 'arcSetMediaPlaying not ready yet', data: { isPlaying, paywallScriptLoaded }, timestamp: Date.now(), hypothesisId: 'C' });
+          // #endregion
+          pendingMediaPlaying = isPlaying
+      }
+  }
+
   const cleanupVideoState = async () => {
       if (isCleaningUp) return
       isCleaningUp = true
       hasStarted = false
+      setMediaPlaying(false)
       if (pingInterval) {
           clearInterval(pingInterval)
           pingInterval = undefined
@@ -194,15 +216,29 @@ export async function register (options: RegisterClientOptions) {
   }
 
   const attachVideoListeners = (video: HTMLVideoElement) => {
-    // 4.1: Avoid memory leaks with AbortController for event listeners
+    // #region agent log
+    console.log('[AGENT_LOG] client.ts:attachVideoListeners', { sessionId: '2866b9', message: 'attached listeners to video', data: { paused: video.paused, ended: video.ended, className: video.className, unlocked: isPaywallUnlocked() }, timestamp: Date.now(), hypothesisId: 'B' });
+    // #endregion
+    console.log('[tessera] attachVideoListeners called for video:', video)
     if (abortController) {
-       abortController.abort()
+        abortController.abort()
     }
     abortController = new AbortController()
-    const signal = abortController.signal
+    const { signal } = abortController
 
+    // Take manual control over Tessera's visual paywall clock
+    if (typeof window !== 'undefined') {
+        (window as any).arcManualMediaControl = true;
+    }
+
+    // 4.1: Handle `play` event — UI clock sync is separate from ping dedup (hasStarted)
     video.addEventListener('play', () => {
-       if (hasStarted || !isPaywallUnlocked()) return
+       console.log('[tessera] PLAY event detected. isPaywallUnlocked?', isPaywallUnlocked())
+       if (!isPaywallUnlocked()) return
+
+       setMediaPlaying(true)
+       if (hasStarted) return
+
        hasStarted = true
        if (pingInterval) clearInterval(pingInterval)
        sendPing('start')
@@ -211,14 +247,21 @@ export async function register (options: RegisterClientOptions) {
 
     // 4.2: Handle `pause` and `ended` events
     video.addEventListener('pause', () => {
+       // #region agent log
+       console.log('[AGENT_LOG] client.ts:pause', { sessionId: '2866b9', message: 'plugin pause event', data: { hasStarted, unlocked: isPaywallUnlocked() }, timestamp: Date.now(), hypothesisId: 'B' });
+       // #endregion
+       console.log('[tessera] PAUSE event detected.')
        hasStarted = false
+       setMediaPlaying(false)
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
     }, { signal })
 
     video.addEventListener('ended', () => {
+       console.log('[tessera] ENDED event detected.')
        hasStarted = false
+       setMediaPlaying(false)
        if (pingInterval) clearInterval(pingInterval)
        pingInterval = undefined
        sendPing('stop')
@@ -234,12 +277,12 @@ export async function register (options: RegisterClientOptions) {
     
     // Video appeared or changed (User navigated to a new video page)
     if (video && video !== currentVideo) {
+      console.log('[tessera] Found new video element:', video)
       
       // If we had a previous video playing, clean up its interval and stop billing
       if (currentVideo) {
+         console.log('[tessera] Cleaning up previous video state.')
          await cleanupVideoState()
-         // cleanupVideoState returns asynchronously, so by the time it finishes,
-         // the DOM might have changed again. Defer attaching listeners to next poll.
          return
       }
 
@@ -248,12 +291,19 @@ export async function register (options: RegisterClientOptions) {
       
       // If video is already playing when we find it
       if (!video.paused && !video.ended) {
+         console.log('[tessera] Video is already playing upon discovery! Sending start.')
          if (!hasStarted && isPaywallUnlocked()) {
+             // #region agent log
+             console.log('[AGENT_LOG] client.ts:autoStart', { sessionId: '2866b9', message: 'auto-start on discovery without arcSetMediaPlaying', data: { hasStarted, hasArcSetMediaPlaying: typeof (window as any).arcSetMediaPlaying === 'function' }, timestamp: Date.now(), hypothesisId: 'C' });
+             // #endregion
              hasStarted = true
+             setMediaPlaying(true)
              if (pingInterval) clearInterval(pingInterval)
              sendPing('start')
              pingInterval = window.setInterval(() => sendPing('ping'), PING_INTERVAL_MS)
          }
+      } else {
+         console.log('[tessera] Video discovered in paused/ended state.')
       }
     }
 
