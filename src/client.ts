@@ -457,31 +457,30 @@ export async function register (options: RegisterClientOptions) {
     void updateCreatorPanelBalance(wallet)
   }
 
-  const loadCreatorWalletForVideo = async (video: { pluginData?: unknown } | null | undefined, videoId: string | null) => {
+  // Returns the tessera rate for the given video (from pluginData or server), or null.
+  const loadTesseraDataForVideo = async (video: { pluginData?: unknown } | null | undefined, videoId: string | null): Promise<{ wallet: string | null, rate: string | null }> => {
     currentCreatorWallet = readWalletFromVideo(video)
-
-    if (currentCreatorWallet) {
-      renderCreatorPanel()
-      return
-    }
 
     if (!videoId) {
       renderCreatorPanel()
-      return
+      return { wallet: currentCreatorWallet, rate: null }
     }
 
+    let rate: string | null = null
     try {
       const pluginRoute = peertubeHelpers.getBaseRouterRoute()
       const res = await fetch(`${pluginRoute}/video/${videoId}/tessera-data`)
       const data = await res.json()
-      if (res.ok && data.wallet) {
-        currentCreatorWallet = data.wallet
+      if (res.ok) {
+        if (data.wallet) currentCreatorWallet = data.wallet
+        if (data.rate) rate = data.rate
       }
     } catch (err) {
-      console.error('[tessera] Failed to fetch creator wallet:', err)
+      console.error('[tessera] Failed to fetch tessera data:', err)
     }
 
     renderCreatorPanel()
+    return { wallet: currentCreatorWallet, rate }
   }
 
   registerHook({
@@ -490,14 +489,25 @@ export async function register (options: RegisterClientOptions) {
       if (params && params.video) {
         currentVideoId = params.video.uuid || params.video.id?.toString() || null
         currentVideoOwner = params.video.account?.name || params.video.channel?.ownerAccount?.name || null
-        // Signal that the next ping response should reset the per-video cost counter
-        videoJustChanged = true
 
         // Owner is now known — remove the resolving guard so the overlay
         // fades in for regular users (checkPageVisibility keeps it hidden for owners)
         document.body.classList.remove('arc-resolving-owner')
         checkPageVisibility()
-        await loadCreatorWalletForVideo(params.video, currentVideoId)
+
+        const { rate } = await loadTesseraDataForVideo(params.video, currentVideoId)
+
+        // Reset session manager display immediately using the video's rate.
+        // This is done HERE (not in the ping handler) to avoid the 429 race condition:
+        // the first ping after a video change is frequently rate-limited and never
+        // returns ratePerSecond, leaving the old rate stuck on screen.
+        if ((window as any).arcResetVideoSession) {
+          const rateNum = rate ? parseFloat(rate) : null
+          ;(window as any).arcResetVideoSession(rateNum ?? undefined)
+          console.log(`[tessera] arcResetVideoSession called with rate=${rate ?? 'default'}`)
+        }
+        // Keep the flag so the ping handler can also update the rate if it arrives
+        videoJustChanged = true
       }
     }
   })
