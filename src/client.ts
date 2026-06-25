@@ -558,6 +558,9 @@ export async function register (options: RegisterClientOptions) {
                   if (data.tesseraMode) {
                       document.body.setAttribute('data-tessera-mode', data.tesseraMode)
                   }
+                  if (data.ratePerSecond && (window as any).arcSetRate) {
+                      (window as any).arcSetRate(data.ratePerSecond)
+                  }
               }
           } catch (err) {
               console.error('[tessera] Failed to send ping:', err)
