@@ -285,12 +285,12 @@ export async function register (options: RegisterClientOptions) {
   }
 
   const withdrawCreatorEarnings = async (wallet: string) => {
-    await connectCreatorWallet(wallet)
+    const connectedWallet = await connectCreatorWallet(wallet)
 
     const prepareRes = await fetch(`${baseUrl}/api/core/creator/prepare-withdraw`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address: wallet })
+      body: JSON.stringify({ address: connectedWallet })
     })
     const prepareData = await prepareRes.json()
     if (!prepareRes.ok) throw new Error(prepareData.error || 'Could not prepare withdrawal')
@@ -301,14 +301,14 @@ export async function register (options: RegisterClientOptions) {
 
     const signature = await window.ethereum!.request({
       method: 'eth_signTypedData_v4',
-      params: [wallet, JSON.stringify(prepareData.typedData)]
+      params: [connectedWallet, JSON.stringify(prepareData.typedData)]
     }) as string
 
     const completeRes = await fetch(`${baseUrl}/api/core/creator/complete-withdraw`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        address: wallet,
+        address: connectedWallet,
         burnIntent: prepareData.burnIntent,
         signature
       })
