@@ -258,6 +258,15 @@ export async function register (options: RegisterServerOptions) {
     private: false
   })
 
+  await registerSetting({
+    name: 'admin-wallet-address',
+    label: 'Admin Wallet (Arc Network)',
+    type: 'input',
+    descriptionHTML: 'Platform admin wallet address for receiving commission. Private key goes in Tessera .env.',
+    default: '',
+    private: false
+  })
+
 
   const rejectUploadIfWalletInvalid = (result: any, params?: any) => {
     // Some hooks might pass req inside params
@@ -377,6 +386,12 @@ export async function register (options: RegisterServerOptions) {
       peertubeHelpers.logger.warn(`[tessera] Error fetching video data for ${videoId}: ${err}`)
       res.status(500).json({ error: 'Internal server error' })
     }
+  })
+
+  // Endpoint for the frontend to fetch the configured admin wallet (for the admin panel)
+  router.get('/admin/wallet', async (req: any, res: any) => {
+    const wallet = await settingsManager.getSetting('admin-wallet-address') as string;
+    res.json({ wallet: wallet || null });
   })
 
   // Ping route handler

@@ -165,11 +165,17 @@ export async function register (options: RegisterClientOptions) {
   let currentVideoOwner: string | null = null
   let currentCreatorWallet: string | null = null
   let creatorPanelEl: HTMLElement | null = null
+  // Must be declared here (not near renderAdminPanel) to avoid Temporal Dead Zone:
+  // renderAdminPanel is a hoisted function declaration and is called early in register().
+  let adminPanelEl: HTMLElement | null = null
   let pendingOwnerCheck = false
   let lastPathname = window.location.pathname
   // True after a new video loads — tells the first ping response to call
   // arcResetVideoSession (resets per-video counter) instead of arcSetRate (rate-only)
   let videoJustChanged = false
+  // Tracks whether the paywall engine has been initialized for the current video.
+  // Prevents double-initialization when the hook fires multiple times.
+  let paywallInitialized = false
 
   const isVideoOwner = (): boolean => {
     if (!peertubeHelpers.isLoggedIn()) return false
@@ -224,9 +230,11 @@ export async function register (options: RegisterClientOptions) {
   document.body.classList.add('arc-resolving-owner')
   checkPageVisibility()
   void prefetchVideoOwner()
+  void renderAdminPanel()
 
   window.addEventListener('popstate', () => {
     void prefetchVideoOwner()
+    void renderAdminPanel()
   })
 
   // Prevent paywall.js from forcefully pausing the video for the owner
@@ -468,16 +476,170 @@ export async function register (options: RegisterClientOptions) {
     void updateCreatorPanelBalance(wallet)
   }
 
-  // Returns the tessera rate for the given video (from pluginData or server), or null.
-  const loadTesseraDataForVideo = async (video: { pluginData?: unknown } | null | undefined, videoId: string | null): Promise<{ wallet: string | null, rate: string | null }> => {
+  // adminPanelEl is declared at the top of register() to avoid TDZ with hoisted renderAdminPanel.
+
+  const updateAdminPanelBalance = async () => {
+    const balanceEl = adminPanelEl?.querySelector('[data-tessera-balance]')
+    if (balanceEl) balanceEl.textContent = 'Loading...'
+    try {
+      const res = await fetch(`${baseUrl}/api/core/seller/balance`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Balance fetch failed')
+      if (balanceEl) {
+        const withdrawable = Number(data.available ?? 0)
+        balanceEl.textContent = `$${withdrawable.toFixed(4)} USDC`
+      }
+    } catch (err: any) {
+      if (balanceEl) balanceEl.textContent = err?.message || 'Error'
+    }
+  }
+
+  async function renderAdminPanel() {
+    // Only show on the plugin settings page
+    if (!window.location.pathname.includes('/admin/plugins')) {
+      if (adminPanelEl) {
+        adminPanelEl.remove()
+        adminPanelEl = null
+      }
+      return
+    }
+
+    // Only for actual admins
+    const user = peertubeHelpers.getUser()
+    if (!user || user.role?.id !== 0) return
+
+    // Ensure we don't duplicate
+    if (adminPanelEl) return
+
+    let adminWallet: string
+    try {
+      const pluginRoute = peertubeHelpers.getBaseRouterRoute()
+      const res = await fetch(`${pluginRoute}/admin/wallet`)
+      const data = await res.json()
+      adminWallet = data.wallet
+    } catch {
+      return
+    }
+
+    if (!adminWallet) return
+
+    adminPanelEl = document.createElement('div')
+    adminPanelEl.id = 'tessera-admin-panel'
+    adminPanelEl.innerHTML = `
+      <style>
+        #tessera-admin-panel {
+          position: fixed;
+          bottom: 20px;
+          right: 20px;
+          z-index: 10050;
+          background: rgba(17, 24, 39, 0.95);
+          color: #f7fafc;
+          border: 1px solid rgba(236, 201, 75, 0.35); /* Yellow/Gold border for admin */
+          border-radius: 12px;
+          padding: 14px 16px;
+          min-width: 240px;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+          font-family: system-ui, -apple-system, sans-serif;
+        }
+        #tessera-admin-panel h4 {
+          margin: 0 0 8px;
+          font-size: 13px;
+          font-weight: 600;
+          color: #ecc94b; /* Gold text */
+        }
+        #tessera-admin-panel .tessera-wallet {
+          font-size: 10px;
+          color: #a0aec0;
+          word-break: break-all;
+          margin-bottom: 10px;
+        }
+        #tessera-admin-panel .tessera-balance {
+          font-size: 18px;
+          font-weight: 700;
+          margin-bottom: 12px;
+        }
+        #tessera-admin-panel button {
+          width: 100%;
+          margin-top: 6px;
+          padding: 8px 10px;
+          border: none;
+          border-radius: 8px;
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 600;
+        }
+        #tessera-admin-panel .btn-balance {
+          background: #d69e2e;
+          color: white;
+        }
+        #tessera-admin-panel .btn-withdraw {
+          background: #38a169;
+          color: white;
+        }
+        #tessera-admin-panel button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+      </style>
+      <h4>Platform Admin Earnings</h4>
+      <div class="tessera-wallet">${adminWallet}</div>
+      <div class="tessera-balance" data-tessera-balance>—</div>
+      <button type="button" class="btn-balance" data-action="balance">Check Balance</button>
+      <button type="button" class="btn-withdraw" data-action="withdraw">Withdraw to Wallet</button>
+    `
+
+    adminPanelEl.querySelector('[data-action="balance"]')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget as HTMLButtonElement
+      btn.disabled = true
+      try {
+        await updateAdminPanelBalance()
+      } catch (err: any) {
+        peertubeHelpers.notifier.error(err?.message || 'Balance check failed')
+      } finally {
+        btn.disabled = false
+      }
+    })
+
+    adminPanelEl.querySelector('[data-action="withdraw"]')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget as HTMLButtonElement
+      btn.disabled = true
+      try {
+        peertubeHelpers.notifier.info('Initiating withdrawal...')
+        const res = await fetch(`${baseUrl}/api/core/seller/withdraw`, { method: 'POST' })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Withdraw failed')
+        if (data.status === 'no_funds') {
+          peertubeHelpers.notifier.info('No withdrawable balance in Gateway.')
+        } else {
+          peertubeHelpers.notifier.success(`Withdrawn ${data.withdrawnAmount} USDC! Tx: ${data.txHash.slice(0, 10)}…`)
+        }
+        await updateAdminPanelBalance()
+      } catch (err: any) {
+        peertubeHelpers.notifier.error(err?.message || 'Withdraw failed')
+      } finally {
+        btn.disabled = false
+      }
+    })
+
+    document.body.appendChild(adminPanelEl)
+    void updateAdminPanelBalance()
+  }
+
+  // Returns wallet, rate, and mode for the given video (from pluginData or server).
+  const loadTesseraDataForVideo = async (
+    video: { pluginData?: unknown } | null | undefined,
+    videoId: string | null
+  ): Promise<{ wallet: string | null, rate: string | null, mode: string, tipAmount: string | null }> => {
     currentCreatorWallet = readWalletFromVideo(video)
 
     if (!videoId) {
       renderCreatorPanel()
-      return { wallet: currentCreatorWallet, rate: null }
+      return { wallet: currentCreatorWallet, rate: null, mode: 'pay-per-second', tipAmount: null }
     }
 
     let rate: string | null = null
+    let mode = 'pay-per-second' // safe default: always block unless explicitly free
+    let tipAmount: string | null = null
     try {
       const pluginRoute = peertubeHelpers.getBaseRouterRoute()
       const res = await fetch(`${pluginRoute}/video/${videoId}/tessera-data`)
@@ -485,19 +647,47 @@ export async function register (options: RegisterClientOptions) {
       if (res.ok) {
         if (data.wallet) currentCreatorWallet = data.wallet
         if (data.rate) rate = data.rate
+        if (data.mode) mode = data.mode
+        if (data.tipAmount) tipAmount = data.tipAmount
       }
     } catch (err) {
       console.error('[tessera] Failed to fetch tessera data:', err)
     }
 
     renderCreatorPanel()
-    return { wallet: currentCreatorWallet, rate }
+    return { wallet: currentCreatorWallet, rate, mode, tipAmount }
+  }
+
+  // Initializes the paywall engine for the current video mode.
+  // Guards against double-initialization across hook re-fires.
+  const initPaywallEngine = (mode: string, wallet: string | null, tipAmount?: string | null) => {
+    if (paywallInitialized) return
+    paywallInitialized = true
+
+    const arcCashier = (window as any).ArcCashier
+    if (!arcCashier) {
+      console.warn('[tessera] ArcCashier not available yet — paywall.bundle.js may still be loading.')
+      return
+    }
+
+    if (mode === 'free') {
+      console.log('[tessera] Free video detected. Calling ArcCashier.initTipMode()')
+      // Ensure no lingering lock from a previous pay-per-second video
+      document.body.classList.remove('arc-locked')
+      arcCashier.initTipMode(wallet || '', tipAmount || '0.10')
+    } else {
+      console.log('[tessera] Pay-per-second video detected. Calling ArcCashier.initPaywall()')
+      arcCashier.initPaywall()
+    }
   }
 
   registerHook({
     target: 'action:video-watch.video.loaded',
     handler: async (params: any) => {
       if (params && params.video) {
+        // Reset initialization state for each new video
+        paywallInitialized = false
+
         currentVideoId = params.video.uuid || params.video.id?.toString() || null
         currentVideoOwner = params.video.account?.name || params.video.channel?.ownerAccount?.name || null
 
@@ -506,7 +696,18 @@ export async function register (options: RegisterClientOptions) {
         document.body.classList.remove('arc-resolving-owner')
         checkPageVisibility()
 
-        const { rate } = await loadTesseraDataForVideo(params.video, currentVideoId)
+        const { rate, mode, wallet, tipAmount } = await loadTesseraDataForVideo(params.video, currentVideoId)
+
+        // Initialize paywall engine based on the video's monetization mode
+        if (!isVideoOwner()) {
+          // Wait for the paywall bundle to be available (script may still be loading on first visit)
+          const waitForBundle = () => new Promise<void>((resolve) => {
+            if ((window as any).ArcCashier) return resolve()
+            script.addEventListener('load', () => resolve(), { once: true })
+          })
+          await waitForBundle()
+          initPaywallEngine(mode, wallet, tipAmount)
+        }
 
         // Reset session manager display immediately using the video's rate.
         // This is done HERE (not in the ping handler) to avoid the 429 race condition:
@@ -582,20 +783,16 @@ export async function register (options: RegisterClientOptions) {
               } else {
                   const data = await response.json()
                   if (data.free) {
-                      // Video is free — stop pinging, remove paywall lock
-                      if (pingInterval) {
-                          clearInterval(pingInterval)
-                          pingInterval = undefined
-                      }
-                      document.body.classList.remove('arc-locked')
-                      document.body.setAttribute('data-tessera-mode', 'free')
-                      // Show tip button if paywall.js exposed it
-                      const tipAmount = (data as any).tipAmount
-                      const creatorWallet = (data as any).creatorWallet
-                      if ((window as any).arcShowTipButton) {
-                          ;(window as any).arcShowTipButton(creatorWallet, tipAmount)
-                      }
-                  } else {
+                       // Video is free — stop pinging, remove paywall lock (safety net).
+                       // The tip button is already shown by initTipMode() in the video.loaded
+                       // hook, so we do NOT call arcShowTipButton here to avoid duplicates.
+                       if (pingInterval) {
+                           clearInterval(pingInterval)
+                           pingInterval = undefined
+                       }
+                       document.body.classList.remove('arc-locked')
+                       document.body.setAttribute('data-tessera-mode', 'free')
+                   } else {
                       if (data.tesseraMode) {
                           document.body.setAttribute('data-tessera-mode', data.tesseraMode)
                       }
@@ -648,6 +845,10 @@ export async function register (options: RegisterClientOptions) {
       }
       currentVideo = null
       isCleaningUp = false
+      // Remove tip button when leaving a video (covers: back to menu, or switching
+      // from a free video to a pay-per-second video)
+      const tipContainer = document.getElementById('arc-tip-btn-container')
+      if (tipContainer) tipContainer.remove()
   }
 
   const attachVideoListeners = (video: HTMLVideoElement) => {

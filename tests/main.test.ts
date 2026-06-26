@@ -33,7 +33,7 @@ describe('PeerTube Plugin Tessera - Server', () => {
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-url' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'webhook-secret' }))
     expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'max-active-viewers' }))
-    expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'base-rate-per-second' }))
+    expect(options.registerSetting).toHaveBeenCalledWith(expect.objectContaining({ name: 'admin-wallet-address' }))
     
     // Verify the router was created
     expect(options.getRouter).toHaveBeenCalled()
@@ -41,6 +41,8 @@ describe('PeerTube Plugin Tessera - Server', () => {
     // Verify endpoints
     const mockRouter = options.getRouter.mock.results[0].value
     expect(mockRouter.get).toHaveBeenCalledWith('/base-url', expect.any(Function))
+    expect(mockRouter.get).toHaveBeenCalledWith('/video/:id/tessera-data', expect.any(Function))
+    expect(mockRouter.get).toHaveBeenCalledWith('/admin/wallet', expect.any(Function))
     expect(mockRouter.post).toHaveBeenCalledWith('/ping', expect.any(Function))
   })
 })
