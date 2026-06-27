@@ -43,13 +43,13 @@ async function persistTesseraVideoData (
   videoId: number,
   data: TesseraPluginData
 ): Promise<void> {
-  if (data['tessera-wallet']?.trim()) {
+  if (data['tessera-wallet'] !== undefined) {
     await storageManager.storeData(storageKey('tessera-wallet', videoId), data['tessera-wallet'].trim())
   }
-  if (data['tessera-mode']) {
+  if (data['tessera-mode'] !== undefined) {
     await storageManager.storeData(storageKey('tessera-mode', videoId), data['tessera-mode'])
   }
-  if (data['tessera-rate']) {
+  if (data['tessera-rate'] !== undefined) {
     await storageManager.storeData(storageKey('tessera-rate', videoId), data['tessera-rate'])
   }
 }
@@ -67,9 +67,9 @@ async function loadTesseraVideoData (
   ])
 
   return {
-    'tessera-wallet': wallet || fromRequest['tessera-wallet'],
-    'tessera-mode': mode || fromRequest['tessera-mode'],
-    'tessera-rate': rate || fromRequest['tessera-rate'],
+    'tessera-wallet': fromRequest['tessera-wallet'] || wallet,
+    'tessera-mode': fromRequest['tessera-mode'] || mode,
+    'tessera-rate': fromRequest['tessera-rate'] || rate,
   }
 }
 
@@ -313,7 +313,7 @@ export async function register (options: RegisterServerOptions) {
     if (!video?.id) return
     const pluginData = req?.body?.pluginData || req?.body?.pluginDataString
     const data = extractTesseraPluginData(pluginData)
-    if (data['tessera-wallet'] || data['tessera-mode'] || data['tessera-rate']) {
+    if (data['tessera-wallet'] !== undefined || data['tessera-mode'] !== undefined || data['tessera-rate'] !== undefined) {
       await persistTesseraVideoData(storageManager, video.id, data)
     }
   }
