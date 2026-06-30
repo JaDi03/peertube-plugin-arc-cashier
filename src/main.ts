@@ -277,7 +277,15 @@ export async function register (options: RegisterServerOptions) {
     // Some hooks might pass req inside params
     const req = params?.req
     const pluginData = req?.body?.pluginData || req?.body?.pluginDataString
-    
+
+    // If no pluginData is present, this is a raw file upload (chunked upload phase).
+    // The wallet is not available yet at this stage — the creator sets it during
+    // the publish form step. Allow the upload and defer validation to the
+    // action:api.video.uploaded / action:api.video.updated hooks.
+    if (!pluginData) {
+      return result || { allowed: true }
+    }
+
     const error = validateTesseraWallet(pluginData)
     if (error) {
       peertubeHelpers.logger.warn(`[tessera] Upload rejected: ${error}`)
